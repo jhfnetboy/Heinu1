@@ -1,0 +1,9 @@
+[submodule "libs/webot"]
+	path = libs/webot
+	url = https://github.com/node-webot/webot
+[submodule "libs/webot-example"]
+	path = libs/webot-example
+	url = https://github.com/node-webot/webot-example
+[submodule "libs/ChatGPT-weBot"]
+	path = libs/ChatGPT-weBot
+	url = https://github.com/SnapdragonLee/ChatGPT-weBot
