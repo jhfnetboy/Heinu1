@@ -16,10 +16,6 @@
   <i>Control your home laptop's Claude Code from WeChat, anywhere, anytime.</i>
 </p>
 
-<p align="center">
-  📖 <a href="https://blog.mushroom.cv/blog/mimo-code-vibe-coding-era/">诞生背景：14天、5人，Vibe Coding 时代到来</a>
-</p>
-
 ---
 
 ## 它能做什么
@@ -75,6 +71,8 @@
 </td>
 </tr>
 </table>
+
+> 📖 真实使用案例：[用 Heinu1 完成 MiMo Code 发布任务全过程](https://blog.mushroom.cv/blog/mimo-code-vibe-coding-era/)（博客发布 + 公众号草稿一条消息搞定）
 
 ---
 
