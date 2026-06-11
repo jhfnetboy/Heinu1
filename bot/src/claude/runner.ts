@@ -1,6 +1,12 @@
 import { spawn } from 'child_process';
 import { CONFIG } from '../config';
 
+export interface RunOptions {
+  sessionId:  string | null;
+  cwd:        string;          // working directory for Claude Code
+  extraDirs?: string[];        // --add-dir paths
+}
+
 export interface RunEvent {
   type:       'session_id' | 'text' | 'tool' | 'result' | 'error';
   text?:      string;
@@ -13,14 +19,14 @@ export interface RunEvent {
 type EventCallback = (ev: RunEvent) => void;
 
 /**
- * Spawn `claude --print <prompt> [--resume <sessionId>] --output-format stream-json`
- * and emit structured events via onEvent.
- * Returns the final Claude session ID (for future --resume calls).
+ * Spawn `claude --print <prompt> --output-format stream-json --verbose`
+ * in the given cwd (workspace path).
+ * Returns the final Claude session ID for future --resume calls.
  */
 export function runClaude(
-  prompt:    string,
-  sessionId: string | null,
-  onEvent:   EventCallback,
+  prompt:  string,
+  opts:    RunOptions,
+  onEvent: EventCallback,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const args: string[] = [
@@ -30,14 +36,16 @@ export function runClaude(
       '--permission-mode', CONFIG.CLAUDE_PERMISSION_MODE,
     ];
 
-    if (sessionId) args.push('--resume', sessionId);
+    if (opts.sessionId) args.push('--resume', opts.sessionId);
+    for (const d of opts.extraDirs ?? []) args.push('--add-dir', d);
 
     const proc = spawn(CONFIG.CLAUDE_BIN, args, {
-      env: { ...process.env },
+      cwd:   opts.cwd,           // ← working directory
+      env:   { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    let finalSessionId = sessionId ?? '';
+    let finalSessionId = opts.sessionId ?? '';
     let buf = '';
 
     proc.stdout.on('data', (chunk: Buffer) => {
@@ -48,12 +56,9 @@ export function runClaude(
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const ev = JSON.parse(trimmed);
-          const sid = dispatchEvent(ev, onEvent);
+          const sid = dispatchEvent(JSON.parse(trimmed), onEvent);
           if (sid) finalSessionId = sid;
-        } catch {
-          // non-JSON output (debug lines etc.) — ignore
-        }
+        } catch { /* non-JSON debug line */ }
       }
     });
 
@@ -63,11 +68,8 @@ export function runClaude(
     });
 
     proc.on('close', (code) => {
-      if (code !== 0 && code !== null) {
-        reject(new Error(`claude 退出码 ${code}`));
-      } else {
-        resolve(finalSessionId);
-      }
+      if (code !== 0 && code !== null) reject(new Error(`claude 退出码 ${code}`));
+      else resolve(finalSessionId);
     });
 
     proc.on('error', reject);
@@ -75,13 +77,11 @@ export function runClaude(
 }
 
 function dispatchEvent(ev: any, onEvent: EventCallback): string | null {
-  // First event: contains session_id
   if (ev.type === 'system' && ev.subtype === 'init' && ev.session_id) {
     onEvent({ type: 'session_id', sessionId: ev.session_id });
     return ev.session_id;
   }
 
-  // Text and tool_use blocks from the assistant
   if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
     for (const block of ev.message.content) {
       if (block.type === 'text' && block.text) {
@@ -94,14 +94,8 @@ function dispatchEvent(ev: any, onEvent: EventCallback): string | null {
     return null;
   }
 
-  // Final result event
   if (ev.type === 'result') {
-    onEvent({
-      type:      'result',
-      text:      ev.result ?? '',
-      sessionId: ev.session_id,
-      costUsd:   ev.cost_usd,
-    });
+    onEvent({ type: 'result', text: ev.result ?? '', sessionId: ev.session_id, costUsd: ev.cost_usd });
     if (ev.session_id) return ev.session_id;
   }
 

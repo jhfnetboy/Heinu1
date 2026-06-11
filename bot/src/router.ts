@@ -2,27 +2,37 @@ import { WeixinMessage, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
 import { runClaude, RunEvent } from './claude/runner';
+import { WorkspaceManager } from './workspace';
 
 const HELP = `🦞 Claude Code 微信机器人
 
 直接发消息 → Claude Code 帮你干活
 
-命令：
-/new          开启新会话（不继承上下文）
-/sessions     查看历史会话列表
-/resume <n>   恢复第 n 个会话（默认1）
+─ 会话命令 ─
+/new          开启新会话
+/sessions     本工作区历史会话
+/resume <n>   恢复第 n 个会话
 /status       查看当前状态
-/stop         请求停止当前任务
+/stop         请求停止任务
+
+─ 工作区命令 ─
+/ws                   列出全部工作区
+/ws <名称>            切换工作区
+/ws add <名称> <路径> <描述>  添加工作区
+/ws rm <名称>         删除工作区
+/ws default <名称>    设为默认工作区
+
 /help         显示此帮助`;
 
 export class Router {
-  private activeSession = new Map<string, string>();
-  private contextTokens = new Map<string, string>();
+  private activeSession = new Map<string, string>();   // userId → session_uuid
+  private contextTokens = new Map<string, string>();   // userId → context_token
   private running       = new Set<string>();
 
   constructor(
     private sender: Sender,
     private store:  SessionStore,
+    private wsm:    WorkspaceManager,
   ) {}
 
   async handle(msg: WeixinMessage) {
@@ -47,28 +57,43 @@ export class Router {
     }
   }
 
+  // ── Commands ──────────────────────────────────────────────────────────────
+
   private async handleCommand(userId: string, input: string) {
-    const [cmd, ...rest] = input.split(/\s+/);
-    switch (cmd.toLowerCase()) {
-      case '/help':
+    const parts = input.trim().split(/\s+/);
+    const cmd   = parts[0].toLowerCase();
+
+    switch (cmd) {
+      case '/help': {
         await this.reply(userId, HELP);
         break;
+      }
 
-      case '/new':
+      case '/ws': {
+        await this.handleWs(userId, parts.slice(1));
+        break;
+      }
+
+      case '/new': {
         if (this.running.has(userId)) {
           await this.reply(userId, '⏳ 当前有任务运行，结束后再开新会话'); return;
         }
         this.activeSession.delete(userId);
-        await this.reply(userId, '✅ 已重置，下一条消息将开启全新会话');
+        const ws = this.wsm.currentName(userId);
+        await this.reply(userId, `✅ 已重置会话\n工作区: ${ws}`);
         break;
+      }
 
       case '/sessions': {
-        const sessions = this.store.list(userId);
-        if (!sessions.length) { await this.reply(userId, '暂无历史会话'); return; }
+        const ws       = this.wsm.currentName(userId);
+        const sessions = this.store.list(userId, ws);
+        if (!sessions.length) {
+          await this.reply(userId, `工作区 [${ws}] 暂无历史会话`); return;
+        }
         const lines = sessions.map((s, i) =>
           `${i + 1}. ${s.title}\n   ${formatAgo(Date.now() - s.last_used)}前`
         );
-        await this.reply(userId, `📋 最近 ${sessions.length} 个会话：\n\n` + lines.join('\n\n'));
+        await this.reply(userId, `📋 [${ws}] 最近 ${sessions.length} 个会话：\n\n` + lines.join('\n\n'));
         break;
       }
 
@@ -76,22 +101,26 @@ export class Router {
         if (this.running.has(userId)) {
           await this.reply(userId, '⏳ 有任务运行中，等完成后再切换'); return;
         }
-        const n       = parseInt(rest[0] ?? '1', 10);
-        const session = this.store.getByIndex(userId, n);
+        const ws      = this.wsm.currentName(userId);
+        const n       = parseInt(parts[1] ?? '1', 10);
+        const session = this.store.getByIndex(userId, ws, n);
         if (!session) {
           await this.reply(userId, `❌ 找不到第 ${n} 个会话，发 /sessions 查看列表`); return;
         }
         this.activeSession.set(userId, session.session_uuid);
-        await this.reply(userId, `✅ 已切换到：${session.title}\n继续发消息即可`);
+        await this.reply(userId, `✅ 已切换到：${session.title}\n工作区: ${ws}`);
         break;
       }
 
       case '/status': {
+        const ws      = this.wsm.currentName(userId);
+        const wsDef   = this.wsm.current(userId);
         const uuid    = this.activeSession.get(userId);
         const session = uuid ? this.store.getByUuid(uuid) : undefined;
         await this.reply(userId,
           `${this.running.has(userId) ? '🔄 运行中' : '⏸ 空闲'}\n` +
-          (session ? `当前会话：${session.title}` : '无活跃会话')
+          `工作区: ${ws} (${wsDef.path})\n` +
+          (session ? `会话: ${session.title}` : '无活跃会话')
         );
         break;
       }
@@ -108,38 +137,126 @@ export class Router {
     }
   }
 
+  // ── /ws subcommands ───────────────────────────────────────────────────────
+
+  private async handleWs(userId: string, args: string[]) {
+    // /ws  (no args) → list
+    if (!args.length) {
+      const current = this.wsm.currentName(userId);
+      const list    = this.wsm.list();
+      const lines   = list.map(w =>
+        `${w.name === current ? '▶ ' : '  '}${w.name}  ${w.description}\n   ${w.path}`
+      );
+      await this.reply(userId, `📁 工作区列表：\n\n` + lines.join('\n\n') +
+        `\n\n当前: ${current}\n发 /ws <名称> 切换`);
+      return;
+    }
+
+    const sub = args[0].toLowerCase();
+
+    // /ws add <name> <path> <description...>
+    if (sub === 'add') {
+      const [, name, wsPath, ...descParts] = args;
+      if (!name || !wsPath) {
+        await this.reply(userId, '用法: /ws add <名称> <路径> <描述>'); return;
+      }
+      const desc = descParts.join(' ') || name;
+      const err  = this.wsm.add(name, wsPath, desc);
+      await this.reply(userId, err ? `❌ ${err}` : `✅ 工作区 "${name}" 已添加\n路径: ${wsPath}`);
+      return;
+    }
+
+    // /ws rm <name>
+    if (sub === 'rm' || sub === 'remove') {
+      const name = args[1];
+      if (!name) { await this.reply(userId, '用法: /ws rm <名称>'); return; }
+      const err = this.wsm.remove(name);
+      await this.reply(userId, err ? `❌ ${err}` : `✅ 工作区 "${name}" 已删除`);
+      return;
+    }
+
+    // /ws default <name>
+    if (sub === 'default') {
+      const name = args[1];
+      if (!name) { await this.reply(userId, '用法: /ws default <名称>'); return; }
+      const err = this.wsm.setDefault(name);
+      await this.reply(userId, err ? `❌ ${err}` : `✅ 默认工作区已设为 "${name}"`);
+      return;
+    }
+
+    // /ws <name>  → switch
+    if (this.running.has(userId)) {
+      await this.reply(userId, '⏳ 有任务运行中，等完成后再切换工作区'); return;
+    }
+    const name = args[0];
+    const err  = this.wsm.switch(userId, name);
+    if (err) { await this.reply(userId, `❌ ${err}`); return; }
+
+    // When switching workspace, clear active session so we resume
+    // the last session for the new workspace (or start fresh)
+    this.activeSession.delete(userId);
+    const wsDef    = this.wsm.current(userId);
+    const lastSess = this.store.getLatest(userId, name);
+    if (lastSess) {
+      this.activeSession.set(userId, lastSess.session_uuid);
+      await this.reply(userId,
+        `✅ 已切换到工作区: ${name}\n路径: ${wsDef.path}\n` +
+        `续接上次会话: ${lastSess.title}`
+      );
+    } else {
+      await this.reply(userId,
+        `✅ 已切换到工作区: ${name}\n路径: ${wsDef.path}\n（新工作区，将开启新会话）`
+      );
+    }
+  }
+
+  // ── Task runner ───────────────────────────────────────────────────────────
+
   private async runTask(userId: string, prompt: string) {
     if (this.running.has(userId)) {
       await this.reply(userId, '⏳ 上一个任务还在运行（/status 查看）');
       return;
     }
     this.running.add(userId);
+
+    const wsName   = this.wsm.currentName(userId);
+    const wsDef    = this.wsm.current(userId);
     this.sender.sendTyping(userId, this.contextTokens.get(userId)!);
 
-    const existingUuid  = this.activeSession.get(userId)
-                          ?? this.store.getLatest(userId)?.session_uuid
-                          ?? null;
+    const existingUuid = this.activeSession.get(userId)
+                         ?? this.store.getLatest(userId, wsName)?.session_uuid
+                         ?? null;
+
     const textParts: string[] = [];
     const tools:    string[]  = [];
     let newSessionId           = existingUuid;
 
     try {
-      const finalSid = await runClaude(prompt, existingUuid, (ev: RunEvent) => {
-        switch (ev.type) {
-          case 'session_id': if (ev.sessionId) newSessionId = ev.sessionId; break;
-          case 'text':       if (ev.text)      textParts.push(ev.text);     break;
-          case 'tool':
-            if (ev.toolName) tools.push(`🔧 ${ev.toolName}(${(ev.toolInput ?? '').slice(0, 60)})`);
-            break;
-          case 'result':
-            if (ev.sessionId) newSessionId = ev.sessionId; break;
-        }
-      });
+      const finalSid = await runClaude(
+        prompt,
+        {
+          sessionId: existingUuid,
+          cwd:       wsDef.path,
+          extraDirs: wsDef.extra_dirs,
+        },
+        (ev: RunEvent) => {
+          switch (ev.type) {
+            case 'session_id': if (ev.sessionId) newSessionId = ev.sessionId; break;
+            case 'text':       if (ev.text)      textParts.push(ev.text);     break;
+            case 'tool':
+              if (ev.toolName) tools.push(`🔧 ${ev.toolName}(${(ev.toolInput ?? '').slice(0, 60)})`);
+              break;
+            case 'result':
+              if (ev.sessionId) newSessionId = ev.sessionId; break;
+          }
+        },
+      );
       if (finalSid) newSessionId = finalSid;
 
       if (newSessionId) {
         if (!this.store.getByUuid(newSessionId)) {
-          this.store.create(userId, newSessionId, prompt.slice(0, 28) + (prompt.length > 28 ? '…' : ''));
+          this.store.create(userId, wsName, newSessionId,
+            prompt.slice(0, 28) + (prompt.length > 28 ? '…' : ''));
         } else {
           this.store.touch(newSessionId);
         }
@@ -159,7 +276,7 @@ export class Router {
 
   private async reply(userId: string, text: string) {
     const ctxToken = this.contextTokens.get(userId);
-    if (!ctxToken) { console.error('[router] 没有 context_token for', userId); return; }
+    if (!ctxToken) { console.error('[router] no context_token for', userId); return; }
     await this.sender.send(userId, ctxToken, text);
   }
 }

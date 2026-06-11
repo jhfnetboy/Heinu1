@@ -2,9 +2,10 @@ import path from 'path';
 import os from 'os';
 
 export const CONFIG = {
-  DATA_DIR:   path.join(os.homedir(), '.heinu1-bot'),
-  TOKEN_FILE: path.join(os.homedir(), '.heinu1-bot', 'token.json'),
-  DB_FILE:    path.join(os.homedir(), '.heinu1-bot', 'sessions.db'),
+  DATA_DIR:        path.join(os.homedir(), '.heinu1-bot'),
+  TOKEN_FILE:      path.join(os.homedir(), '.heinu1-bot', 'token.json'),
+  DB_FILE:         path.join(os.homedir(), '.heinu1-bot', 'sessions.db'),
+  WORKSPACES_FILE: path.join(os.homedir(), '.heinu1-bot', 'workspaces.json'),
 
   // Domain only — /ilink/bot/* prefix is in each endpoint path
   ILINK_DEFAULT_BASE: 'https://ilinkai.weixin.qq.com',

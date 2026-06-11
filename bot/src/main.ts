@@ -5,6 +5,7 @@ import { Monitor } from './ilink/monitor';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
 import { Router } from './router';
+import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
 
 async function main() {
@@ -29,7 +30,9 @@ async function main() {
   const client  = new ILinkClient(loginResult.bot_token, loginResult.baseurl);
   const sender  = new Sender(client);
   const store   = new SessionStore();
-  const router  = new Router(sender, store);
+  const wsm     = new WorkspaceManager();
+  const router  = new Router(sender, store, wsm);
+  console.log(`[main] 工作区配置: ${CONFIG.WORKSPACES_FILE}`);
 
   const monitor = new Monitor(client, async (msg) => {
     const preview = msg.item_list?.[0]?.text_item?.text?.slice(0, 40) ?? '(非文字)';
