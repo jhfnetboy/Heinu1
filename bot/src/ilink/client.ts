@@ -1,120 +1,62 @@
-import https from 'https';
-import http  from 'http';
+import { randomBytes } from 'crypto';
 
-function makeUin(): string {
-  const n = Math.floor(Math.random() * 0xFFFFFFFF);
-  return Buffer.from(String(n)).toString('base64');
+function randomWechatUin(): string {
+  const value = randomBytes(4).readUInt32BE(0);
+  return Buffer.from(String(value), 'utf8').toString('base64');
 }
 
-interface RawResponse { status: number; body: string; }
-
-function rawRequest(url: string, opts: {
-  method?:    string;
-  headers?:   Record<string, string>;
-  body?:      string;
-  timeoutMs?: number;
-  _redirects?: number;
-}): Promise<RawResponse> {
-  return new Promise((resolve, reject) => {
-    const parsed  = new URL(url);
-    const lib     = parsed.protocol === 'https:' ? https : http;
-    const options = {
-      hostname: parsed.hostname,
-      port:     parsed.port || undefined,
-      path:     parsed.pathname + parsed.search,
-      method:   opts.method ?? 'GET',
-      headers:  opts.headers ?? {},
-      timeout:  opts.timeoutMs ?? 10_000,
-    };
-
-    const req = lib.request(options, (res) => {
-      const loc = res.headers.location;
-      if (loc && res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
-        if ((opts._redirects ?? 0) >= 3) { reject(new Error('重定向次数过多')); return; }
-        res.resume();
-        const target = loc.startsWith('http') ? loc : `${parsed.origin}${loc}`;
-        rawRequest(target, { ...opts, _redirects: (opts._redirects ?? 0) + 1 }).then(resolve, reject);
-        return;
-      }
-
-      let data = '';
-      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-      res.on('end',  () => resolve({ status: res.statusCode ?? 0, body: data }));
-    });
-
-    req.on('timeout', () => req.destroy(new Error('请求超时')));
-    req.on('error',   reject);
-    if (opts.body) req.write(opts.body);
-    req.end();
-  });
+function buildHeaders(token: string): Record<string, string> {
+  return {
+    'Content-Type':  'application/json',
+    AuthorizationType: 'ilink_bot_token',
+    Authorization:   `Bearer ${token}`,
+    'X-WECHAT-UIN':  randomWechatUin(),
+  };
 }
 
-function parseJSON<T>(raw: RawResponse, url: string): T {
-  const { status, body } = raw;
-  if (!body.trim()) {
-    throw new Error(
-      `iLink API 返回空响应 (HTTP ${status})\n` +
-      `  URL: ${url}\n` +
-      `  提示: 检查网络是否可达 ilinkai.weixin.qq.com，或账号是否已开通 ClawBot`
-    );
+function normalizeBase(base: string): string {
+  return base.replace(/\/+$/, '');
+}
+
+async function parseResponse<T>(res: Response, label: string): Promise<T> {
+  const text = await res.text();
+  const payload: any = text ? JSON.parse(text) : {};
+
+  if (!res.ok) {
+    const msg = payload?.errmsg ?? `${label} HTTP ${res.status}`;
+    throw new Error(`${msg} (HTTP ${res.status})`);
   }
-  if (status >= 400) {
-    throw new Error(`HTTP ${status}: ${body.slice(0, 300)}\n  URL: ${url}`);
+  if (typeof payload?.ret === 'number' && payload.ret !== 0) {
+    throw new Error(`${label} ret=${payload.ret}: ${payload.errmsg ?? ''}`);
   }
-  try {
-    return JSON.parse(body);
-  } catch {
-    throw new Error(
-      `响应不是合法 JSON (HTTP ${status})\n` +
-      `  URL: ${url}\n` +
-      `  响应: ${body.slice(0, 200)}`
-    );
-  }
+  return payload as T;
 }
 
 export class ILinkClient {
   constructor(
     private token:   string,
-    private baseurl: string,   // from TokenData.baseurl, may differ per account
+    private baseUrl: string,  // domain only, e.g. https://ilinkai.weixin.qq.com
   ) {}
 
-  private authHeaders(): Record<string, string> {
-    return {
-      'Content-Type':            'application/json',
-      'AuthorizationType':       'ilink_bot_token',
-      'Authorization':           `Bearer ${this.token}`,
-      'X-WECHAT-UIN':            makeUin(),
-      'iLink-App-ClientVersion': '1',
-    };
-  }
-
-  async get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-    const url = new URL(this.baseurl + path);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const raw = await rawRequest(url.toString(), { headers: this.authHeaders() });
-    return parseJSON<T>(raw, url.toString());
-  }
-
-  async post<T>(path: string, payload: unknown, timeoutMs = 10_000): Promise<T> {
-    const url = this.baseurl + path;
-    const raw = await rawRequest(url, {
-      method:    'POST',
-      headers:   this.authHeaders(),
-      body:      JSON.stringify(payload),
-      timeoutMs,
+  async post<T>(endpoint: string, body: unknown, timeoutMs = 15_000): Promise<T> {
+    const url = new URL(endpoint, normalizeBase(this.baseUrl) + '/');
+    const res = await fetch(url, {
+      method:  'POST',
+      headers: buildHeaders(this.token),
+      body:    JSON.stringify(body),
+      signal:  AbortSignal.timeout(timeoutMs),
     });
-    return parseJSON<T>(raw, url);
+    return parseResponse<T>(res, endpoint);
   }
 }
 
-// No auth — used only during QR login (always hits the default base)
+// Unauthenticated — QR login only
 export class ILinkPreAuth {
-  constructor(private baseurl: string) {}
+  constructor(private baseUrl: string) {}
 
-  async get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-    const url = new URL(this.baseurl + path);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const raw = await rawRequest(url.toString(), {});
-    return parseJSON<T>(raw, url.toString());
+  async get<T>(endpoint: string, extraHeaders: Record<string, string> = {}): Promise<T> {
+    const url = new URL(endpoint, normalizeBase(this.baseUrl) + '/');
+    const res = await fetch(url, { headers: extraHeaders });
+    return parseResponse<T>(res, endpoint);
   }
 }

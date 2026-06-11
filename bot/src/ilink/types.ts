@@ -1,69 +1,55 @@
-// message type in item_list.type
-export enum ItemType {
+// Exact values from weixin-bot-ilink/nodejs/src/types.ts (ground truth)
+
+export enum MessageType {
+  USER = 1,
+  BOT  = 2,
+}
+
+export enum MessageState {
+  NEW        = 0,
+  GENERATING = 1,
+  FINISH     = 2,
+}
+
+export enum MessageItemType {
   TEXT  = 1,
-  IMAGE = 3,
-  VOICE = 34,
-  VIDEO = 43,
-  FILE  = 49,
+  IMAGE = 2,
+  VOICE = 3,
+  FILE  = 4,
+  VIDEO = 5,
 }
 
 export interface TextItem { text: string; }
 
 export interface MessageItem {
-  type:       ItemType;
+  type:       MessageItemType;
   text_item?: TextItem;
+  // (image/voice/file/video items omitted — not needed for text bot)
 }
 
-// Inbound message from user (inside getupdates response)
-export interface ILinkMessage {
+export interface WeixinMessage {
+  message_id:    number;
   from_user_id:  string;
   to_user_id:    string;
-  message_type:  number;   // 1 = user, 2 = bot own message (skip these)
-  message_state: number;
+  client_id:     string;
+  create_time_ms: number;
+  message_type:  MessageType;
+  message_state: MessageState;
   context_token: string;
   item_list:     MessageItem[];
-  create_time?:  number;
 }
 
-export interface UpdateResponse {
-  ret?:                 number;
-  errmsg?:              string;
-  msgs:                 ILinkMessage[];
-  get_updates_buf:      string;
+export interface GetUpdatesResp {
+  ret?:                    number;
+  errcode?:                number;
+  errmsg?:                 string;
+  msgs:                    WeixinMessage[];
+  get_updates_buf:         string;
   longpolling_timeout_ms?: number;
 }
 
-export interface QRCodeResponse {
-  qrcode:             string;  // polling key
-  qrcode_img_content: string;  // URL to display as QR image
-  errmsg?:            string;
-}
-
-export interface QRStatusResponse {
-  status:         'wait' | 'scanned' | 'confirmed';
-  bot_token?:     string;
-  baseurl?:       string;  // may override ILINK_DEFAULT_BASE
-  ilink_bot_id?:  string;
-  ilink_user_id?: string;
-  errmsg?:        string;
-}
-
 export interface TokenData {
-  bot_token: string;
-  baseurl:   string;
-  saved_at:  number;
-}
-
-// Outbound message to user
-export interface SendMessageBody {
-  msg: {
-    from_user_id:  string;
-    to_user_id:    string;
-    client_id:     string;
-    message_type:  2;
-    message_state: 2;
-    context_token: string;
-    item_list:     MessageItem[];
-  };
-  base_info: { channel_version: string };
+  bot_token:  string;
+  baseurl:    string;   // domain only, e.g. https://ilinkai.weixin.qq.com
+  saved_at:   number;
 }

@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { login, clearToken } from './ilink/auth';
+import { login, doQRLogin, clearToken } from './ilink/auth';
 import { ILinkClient } from './ilink/client';
 import { Monitor } from './ilink/monitor';
 import { Sender } from './ilink/sender';
@@ -16,7 +16,7 @@ async function main() {
   fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
   if (args.includes('--relogin')) clearToken();
 
-  let loginResult: { bot_token: string; baseurl: string };
+  let loginResult: Awaited<ReturnType<typeof login>>;
   try {
     loginResult = await login();
   } catch (err: any) {
@@ -49,8 +49,6 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
-function ts() {
-  return new Date().toLocaleTimeString('zh-CN');
-}
+function ts() { return new Date().toLocaleTimeString('zh-CN'); }
 
 main();

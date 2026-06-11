@@ -1,74 +1,87 @@
 import fs from 'fs';
 import qrcode from 'qrcode-terminal';
 import { ILinkPreAuth } from './client';
-import { QRCodeResponse, QRStatusResponse, TokenData } from './types';
+import { TokenData } from './types';
 import { CONFIG } from '../config';
 
-export interface LoginResult { bot_token: string; baseurl: string; }
+interface QrCodeResponse {
+  qrcode:             string;  // polling key
+  qrcode_img_content: string;  // URL to display
+}
+
+// Note: reference uses 'scaned' (single n) — match exactly
+interface QrStatusResponse {
+  status:         'wait' | 'scaned' | 'confirmed' | 'expired';
+  bot_token?:     string;
+  baseurl?:       string;
+  ilink_bot_id?:  string;
+  ilink_user_id?: string;
+}
+
+export interface LoginResult {
+  bot_token: string;
+  baseurl:   string;  // domain only
+}
 
 export async function login(): Promise<LoginResult> {
   if (fs.existsSync(CONFIG.TOKEN_FILE)) {
     const data: TokenData = JSON.parse(fs.readFileSync(CONFIG.TOKEN_FILE, 'utf8'));
-    // Migrate old tokens that only stored the domain without /ilink/bot
-    let { baseurl } = data;
-    if (!baseurl.includes('/ilink/bot')) {
-      baseurl = baseurl.replace(/\/$/, '') + '/ilink/bot';
-      saveToken(data.bot_token, baseurl);  // persist fixed value
-      console.log('[auth] token baseurl 已自动修正');
-    }
     console.log('[auth] 使用已保存的 token');
-    return { bot_token: data.bot_token, baseurl };
+    return { bot_token: data.bot_token, baseurl: data.baseurl };
   }
   return doQRLogin();
 }
 
 export async function doQRLogin(): Promise<LoginResult> {
-  const pre = new ILinkPreAuth(CONFIG.ILINK_DEFAULT_BASE);
-  console.log('[auth] 获取登录二维码...');
+  const pre     = new ILinkPreAuth(CONFIG.ILINK_DEFAULT_BASE);
+  const MAX_TRY = 3;
 
-  const qrRes = await pre.get<QRCodeResponse>('/get_bot_qrcode', { bot_type: '3' });
-  if (!qrRes.qrcode) {
-    throw new Error(`获取二维码失败: ${JSON.stringify(qrRes)}`);
-  }
+  for (let attempt = 1; attempt <= MAX_TRY; attempt++) {
+    console.log(`[auth] 获取登录二维码 (${attempt}/${MAX_TRY})...`);
 
-  // qrcode_img_content is the URL WeChat clients can scan
-  // qrcode is the polling key
-  console.log('\n请用微信扫描以下二维码，添加 ClawBot 为联系人：\n');
-  qrcode.generate(qrRes.qrcode_img_content, { small: true });
-  console.log(`\n二维码 URL: ${qrRes.qrcode_img_content}`);
-  console.log('等待扫码...\n');
-
-  while (true) {
-    await sleep(2000);
-    const st = await pre.get<QRStatusResponse>('/get_qrcode_status', {
-      qrcode: qrRes.qrcode,   // polling key (not the image URL)
-    });
-
-    // -14 means this QR code expired, start over
-    if ((st as any).ret === -14 || (st as any).ret === -1) {
-      console.log('[auth] 二维码已过期，重新获取...');
-      return doQRLogin();
+    const qr = await pre.get<QrCodeResponse>('/ilink/bot/get_bot_qrcode?bot_type=3');
+    if (!qr.qrcode || !qr.qrcode_img_content) {
+      throw new Error(`获取二维码失败: ${JSON.stringify(qr).slice(0, 200)}`);
     }
 
-    if (st.status === 'scanned') {
-      process.stdout.write('\r[auth] 已扫码，等待手机确认...     ');
-    } else if (st.status === 'confirmed' && st.bot_token) {
-      console.log('\n[auth] ✅ 登录成功！');
-      // Server returns the domain only (e.g. "https://ilinkai.weixin.qq.com").
-      // All bot API endpoints live under /ilink/bot/ — append it here so the
-      // ILinkClient never needs to know about this path prefix distinction.
-      const baseDomain = (st.baseurl || 'https://ilinkai.weixin.qq.com').replace(/\/$/, '');
-      const baseurl    = baseDomain + '/ilink/bot';
-      saveToken(st.bot_token, baseurl);
-      return { bot_token: st.bot_token, baseurl };
+    console.log('\n请用微信扫描以下二维码，添加 ClawBot 为联系人：\n');
+    qrcode.generate(qr.qrcode_img_content, { small: true });
+    console.log(`\n二维码 URL: ${qr.qrcode_img_content}\n等待扫码...\n`);
+
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await sleep(2000);
+      try {
+        const st = await pre.get<QrStatusResponse>(
+          `/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qr.qrcode)}`,
+          { 'iLink-App-ClientVersion': '1' },   // only this endpoint needs it
+        );
+
+        if (st.status === 'scaned') {
+          process.stdout.write('\r[auth] 已扫码，等待手机确认...     ');
+        } else if (st.status === 'confirmed') {
+          if (!st.bot_token) throw new Error('confirmed 但服务器未返回 bot_token');
+          console.log('\n[auth] ✅ 登录成功！');
+          const baseurl = st.baseurl || CONFIG.ILINK_DEFAULT_BASE;
+          saveToken(st.bot_token, baseurl);
+          return { bot_token: st.bot_token, baseurl };
+        } else if (st.status === 'expired') {
+          console.log('\n[auth] 二维码过期，重新获取...');
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`[auth] 轮询出错: ${err.message}`);
+      }
     }
   }
+
+  throw new Error('登录失败：已达最大重试次数');
 }
 
-function saveToken(token: string, baseurl: string) {
+function saveToken(bot_token: string, baseurl: string) {
   fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
-  const data: TokenData = { bot_token: token, baseurl, saved_at: Date.now() };
-  fs.writeFileSync(CONFIG.TOKEN_FILE, JSON.stringify(data, null, 2));
+  const data: TokenData = { bot_token, baseurl, saved_at: Date.now() };
+  fs.writeFileSync(CONFIG.TOKEN_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 export function clearToken() {
