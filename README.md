@@ -131,11 +131,67 @@ npm start
 | `帮我看看 ~/project/main.py 有没有 bug` | Claude Code 读文件分析 |
 | `把刚才的代码提交一下` | Claude Code 执行 git 操作 |
 | `现在在做什么进展怎么样` | Claude Code 报告当前状态 |
-| `/status` | 查看 bot 运行状态 |
-| `/sessions` | 查看历史会话列表 |
+| `/ws` | 列出全部工作区（▶ 标当前） |
+| `/ws main` | 切换到 main 工作目录 |
+| `/ws web` | 切换到 web 工作目录 |
+| `/status` | 查看当前工作区和会话状态 |
+| `/sessions` | 查看当前工作区历史会话 |
 | `/resume 2` | 切换到第2个历史会话 |
 | `/new` | 开启全新会话（清空上下文） |
 | `/help` | 完整命令帮助 |
+
+---
+
+## 多工作区配置
+
+### 第一步：命令行预设目录（在电脑上做一次）
+
+```bash
+cd Heinu1/bot
+
+# 添加你的工作目录，第一个自动成为默认
+npm run ws -- add main   /Users/jason/Dev/myproject   "主项目"
+npm run ws -- add web    /Users/jason/Dev/frontend     "前端 React"
+npm run ws -- add tools  /Users/jason/Dev/tools        "工具脚本"
+
+# 查看配置是否正确（★ 标记的是默认）
+npm run ws -- list
+```
+
+输出示例：
+```
+默认工作区: main
+
+名称              路径                                      描述
+────────────────────────────────────────────────────────────────────────
+ ★main          /Users/jason/Dev/myproject              主项目
+  web           /Users/jason/Dev/frontend               前端 React
+  tools         /Users/jason/Dev/tools                  工具脚本
+```
+
+其他管理命令：
+```bash
+npm run ws -- default web     # 改默认工作区
+npm run ws -- rm tools        # 删除工作区
+npm run ws -- show            # 查看配置文件原始内容
+```
+
+配置写入 `~/.heinu1-bot/workspaces.json`，重启 bot 自动生效。
+
+### 第二步：微信里切换目录
+
+用 `/ws <名称>` 切换，名称就是你在命令行里 `add` 时起的名字：
+
+| 在微信发 | 效果 |
+|---|---|
+| `/ws` | 列出所有工作区，当前用 `▶` 标记 |
+| `/ws main` | 切换到 main 目录，自动续接该目录上次的会话 |
+| `/ws web` | 切换到 web 目录 |
+| `/ws tools` | 切换到 tools 目录 |
+
+切换后 Claude Code 的工作目录（`cwd`）会随之变化，之后发的所有消息都在新目录下执行。
+
+> **提示：** 每个工作区的会话独立存储。切换到 `web` 后发 `/sessions`，看到的是 `web` 目录的历史；切回 `main` 看到的是 `main` 的历史。
 
 ---
 
@@ -183,8 +239,10 @@ Heinu1/
 ├── bot/                        ← 机器人实现
 │   ├── src/
 │   │   ├── main.ts             ← 入口：启动 Monitor + Router
+│   │   ├── cli.ts              ← 工作区配置 CLI（npm run ws）
 │   │   ├── config.ts           ← 配置（路径、API、权限模式）
 │   │   ├── router.ts           ← 命令解析 + 任务调度
+│   │   ├── workspace.ts        ← 工作区管理（加载/保存/切换）
 │   │   ├── ilink/
 │   │   │   ├── auth.ts         ← QR 登录，token 持久化
 │   │   │   ├── client.ts       ← iLink HTTP 客户端
