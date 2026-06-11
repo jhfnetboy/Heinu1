@@ -72,7 +72,7 @@
 </tr>
 </table>
 
-> 📖 真实使用案例：[用 Heinu1 完成 MiMo Code 发布任务全过程](https://blog.mushroom.cv/blog/mimo-code-vibe-coding-era/)（博客发布 + 公众号草稿一条消息搞定）
+> 📖 案例：[用黑奴一号发布 MiMo Code 新闻的结果](https://blog.mushroom.cv/blog/mimo-code-vibe-coding-era/)（博客发布 + 公众号草稿，一条微信消息搞定）
 
 ---
 
@@ -387,8 +387,3 @@ Body: {
 
 会话表结构：`(user_openid, workspace, session_uuid, title, created_at, last_used)`。切换工作区时 bot 自动加载该工作区最近一次的 `session_uuid` 用于 `--resume`。
 
----
-
-<p align="center">
-  Made with ❤️ + Claude Code · <a href="https://blog.mushroom.cv/blog/mimo-code-vibe-coding-era/">Vibe Coding 时代</a>
-</p>
