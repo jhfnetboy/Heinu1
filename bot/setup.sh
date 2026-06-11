@@ -25,13 +25,16 @@ chmod +x "$SCRIPT_DIR/start.sh"
 # 3. 创建数据目录
 mkdir -p "$DATA_DIR"
 
-# 4. 安装 launchd plist
+# 4. 安装 launchd plist（用本机实际路径替换模板占位符）
 echo "⚙️  配置 macOS 开机自启服务..."
 mkdir -p "$HOME/Library/LaunchAgents"
-cp "$PLIST_SRC" "$PLIST_DEST"
 
-# 卸载旧版本（如果存在）
+# 卸载旧版本（如果存在），再写入按本机路径渲染的配置
 launchctl unload "$PLIST_DEST" 2>/dev/null || true
+
+sed -e "s|__BOT_DIR__|$SCRIPT_DIR|g" \
+    -e "s|__HOME__|$HOME|g" \
+    "$PLIST_SRC" > "$PLIST_DEST"
 
 echo ""
 echo "✅ 安装完成！"

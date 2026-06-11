@@ -7,7 +7,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/jason/Dev/tools/Heinu1/bot/start.sh</string>
+    <string>__BOT_DIR__/start.sh</string>
   </array>
 
   <!-- 开机自动启动 -->
@@ -26,18 +26,18 @@
   <integer>10</integer>
 
   <key>WorkingDirectory</key>
-  <string>/Users/jason/Dev/tools/Heinu1/bot</string>
+  <string>__BOT_DIR__</string>
 
   <key>StandardOutPath</key>
-  <string>/Users/jason/.heinu1-bot/bot.log</string>
+  <string>__HOME__/.heinu1-bot/bot.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/jason/.heinu1-bot/bot.error.log</string>
+  <string>__HOME__/.heinu1-bot/bot.error.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/jason</string>
+    <string>__HOME__</string>
     <!-- 如需修改权限模式：bypassPermissions / acceptEdits / default -->
     <key>CLAUDE_PERMISSION_MODE</key>
     <string>bypassPermissions</string>
