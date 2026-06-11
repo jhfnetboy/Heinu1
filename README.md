@@ -60,6 +60,40 @@ Router.runTask("帮我重构 xxx 文件")
 - `--permission-mode bypassPermissions` 家用机信任自己，所有文件读写/Bash 命令全自动执行不弹权限框
 - 会话 ID 存在 SQLite 里，重启 bot 也可以 `/resume` 续接之前的工作
 
+### iLink 协议真实 API 路径（已验证）
+
+所有端点都在 `/ilink/bot/` 前缀下（早期文档漏掉了这个前缀，会导致 HTTP 404）：
+
+```bash
+# 获取登录二维码
+GET  https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3
+# → { qrcode: "轮询用的key", qrcode_img_content: "显示用的URL" }
+
+# 轮询扫码状态
+GET  https://ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode=<key>
+# → { status: "wait|scanned|confirmed", bot_token?, baseurl? }
+
+# 长轮询接收消息（服务端 hold 35秒，有消息才返回）
+POST https://ilinkai.weixin.qq.com/ilink/bot/getupdates
+Body: { "get_updates_buf": "<cursor>", "base_info": { "channel_version": "1.0.2" } }
+# → { msgs: [{from_user_id, context_token, item_list:[{type:1,text_item:{text:"..."}}]}], get_updates_buf }
+
+# 发送消息（嵌套结构，每条消息需要 client_id 去重）
+POST https://ilinkai.weixin.qq.com/ilink/bot/sendmessage
+Body: {
+  "msg": {
+    "to_user_id": "...", "context_token": "...",
+    "message_type": 2, "message_state": 2,
+    "client_id": "唯一ID防重",
+    "item_list": [{ "type": 1, "text_item": { "text": "你好" } }]
+  },
+  "base_info": { "channel_version": "1.0.2" }
+}
+# → {} 空对象代表成功
+```
+
+**注意：** 登录完成后服务器可能返回不同的 `baseurl`，后续请求必须用这个 baseurl 而不是默认的。
+
 ---
 
 ## 快速开始

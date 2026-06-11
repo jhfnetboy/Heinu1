@@ -1,6 +1,6 @@
 import { ILinkClient } from './client';
-import { ILinkMessage, UpdateResponse } from './types';
-import { CONFIG } from '../config';
+import { ILinkMessage, ItemType, UpdateResponse } from './types';
+import { BASE_INFO, CONFIG } from '../config';
 
 type MessageHandler = (msg: ILinkMessage) => void;
 
@@ -16,7 +16,7 @@ export class Monitor {
   start() {
     this.running = true;
     this.loop().catch(err => {
-      console.error('[monitor] fatal error:', err.message);
+      console.error('[monitor] 致命错误:', err.message);
       process.exit(1);
     });
   }
@@ -24,36 +24,40 @@ export class Monitor {
   stop() { this.running = false; }
 
   private async loop() {
-    console.log('[monitor] 开始监听消息（长轮询）...');
+    console.log('[monitor] 开始长轮询...');
     while (this.running) {
       try {
         const res = await this.client.post<UpdateResponse>(
           '/getupdates',
-          { get_updates_buf: this.cursor },
+          { get_updates_buf: this.cursor, base_info: BASE_INFO },
           CONFIG.POLL_TIMEOUT_MS + 5_000,
         );
 
-        if (res.ret === -14) {
-          console.error('[monitor] ⚠️ Session 过期，需要重新登录');
-          process.exit(1); // launchd 会重启，触发重新登录
+        // -14 = session expired
+        if ((res as any).ret === -14) {
+          console.error('[monitor] ⚠️ Session 过期，需重新登录');
+          process.exit(1);
         }
 
-        if (res.ret !== 0) {
-          console.error('[monitor] getupdates error:', res.ret, res.errmsg);
-          await sleep(CONFIG.RECONNECT_DELAY_MS);
-          continue;
+        if (res.get_updates_buf) {
+          this.cursor = res.get_updates_buf;
         }
 
-        if (res.next_get_updates_buf) {
-          this.cursor = res.next_get_updates_buf;
-        }
+        for (const msg of res.msgs ?? []) {
+          // Skip messages the bot itself sent (message_type 2)
+          if (msg.message_type === 2) continue;
 
-        for (const msg of res.msg_list ?? []) {
+          // Only forward messages that have at least one text item
+          const hasText = msg.item_list?.some(
+            i => i.type === ItemType.TEXT && i.text_item?.text,
+          );
+          if (!hasText && !msg.item_list?.length) continue;
+
           this.onMessage(msg);
         }
       } catch (err: any) {
-        if (err.message === 'Request timeout') continue; // 长轮询正常超时
-        console.error('[monitor] error:', err.message, '— 3s 后重连...');
+        if (err.message === '请求超时') continue; // 长轮询正常超时
+        console.error('[monitor] 错误:', err.message, '— 3s 后重连...');
         await sleep(CONFIG.RECONNECT_DELAY_MS);
       }
     }

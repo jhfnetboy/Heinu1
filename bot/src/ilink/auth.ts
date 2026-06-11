@@ -4,33 +4,41 @@ import { ILinkPreAuth } from './client';
 import { QRCodeResponse, QRStatusResponse, TokenData } from './types';
 import { CONFIG } from '../config';
 
-export async function login(): Promise<string> {
+export interface LoginResult { bot_token: string; baseurl: string; }
+
+export async function login(): Promise<LoginResult> {
   if (fs.existsSync(CONFIG.TOKEN_FILE)) {
     const data: TokenData = JSON.parse(fs.readFileSync(CONFIG.TOKEN_FILE, 'utf8'));
     console.log('[auth] 使用已保存的 token');
-    return data.bot_token;
+    return { bot_token: data.bot_token, baseurl: data.baseurl };
   }
   return doQRLogin();
 }
 
-export async function doQRLogin(): Promise<string> {
-  const pre = new ILinkPreAuth();
-  console.log('[auth] 获取二维码...');
+export async function doQRLogin(): Promise<LoginResult> {
+  const pre = new ILinkPreAuth(CONFIG.ILINK_DEFAULT_BASE);
+  console.log('[auth] 获取登录二维码...');
 
   const qrRes = await pre.get<QRCodeResponse>('/get_bot_qrcode', { bot_type: '3' });
-  if (qrRes.ret !== 0) throw new Error(`获取二维码失败: ${qrRes.errmsg}`);
+  if (!qrRes.qrcode) {
+    throw new Error(`获取二维码失败: ${JSON.stringify(qrRes)}`);
+  }
 
-  console.log('\n请用微信扫描以下二维码，添加 ClawBot 机器人联系人：\n');
-  qrcode.generate(qrRes.qrcode_url, { small: true });
-  console.log(`\n（也可直接访问：${qrRes.qrcode_url}）\n等待扫码...\n`);
+  // qrcode_img_content is the URL WeChat clients can scan
+  // qrcode is the polling key
+  console.log('\n请用微信扫描以下二维码，添加 ClawBot 为联系人：\n');
+  qrcode.generate(qrRes.qrcode_img_content, { small: true });
+  console.log(`\n二维码 URL: ${qrRes.qrcode_img_content}`);
+  console.log('等待扫码...\n');
 
   while (true) {
     await sleep(2000);
     const st = await pre.get<QRStatusResponse>('/get_qrcode_status', {
-      qrcode_key: qrRes.qrcode_key,
+      qrcode: qrRes.qrcode,   // polling key (not the image URL)
     });
 
-    if (st.ret === -14) {
+    // -14 means this QR code expired, start over
+    if ((st as any).ret === -14 || (st as any).ret === -1) {
       console.log('[auth] 二维码已过期，重新获取...');
       return doQRLogin();
     }
@@ -39,15 +47,16 @@ export async function doQRLogin(): Promise<string> {
       process.stdout.write('\r[auth] 已扫码，等待手机确认...     ');
     } else if (st.status === 'confirmed' && st.bot_token) {
       console.log('\n[auth] ✅ 登录成功！');
-      saveToken(st.bot_token);
-      return st.bot_token;
+      const baseurl = st.baseurl || CONFIG.ILINK_DEFAULT_BASE;
+      saveToken(st.bot_token, baseurl);
+      return { bot_token: st.bot_token, baseurl };
     }
   }
 }
 
-function saveToken(token: string) {
+function saveToken(token: string, baseurl: string) {
   fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
-  const data: TokenData = { bot_token: token, saved_at: Date.now() };
+  const data: TokenData = { bot_token: token, baseurl, saved_at: Date.now() };
   fs.writeFileSync(CONFIG.TOKEN_FILE, JSON.stringify(data, null, 2));
 }
 

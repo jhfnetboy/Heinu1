@@ -1,6 +1,5 @@
 import https from 'https';
 import http  from 'http';
-import { CONFIG } from '../config';
 
 function makeUin(): string {
   const n = Math.floor(Math.random() * 0xFFFFFFFF);
@@ -14,12 +13,12 @@ function rawRequest(url: string, opts: {
   headers?:   Record<string, string>;
   body?:      string;
   timeoutMs?: number;
-  redirect?:  number;   // redirect depth, default 0
+  _redirects?: number;
 }): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
-    const parsed   = new URL(url);
-    const lib      = parsed.protocol === 'https:' ? https : http;
-    const options  = {
+    const parsed  = new URL(url);
+    const lib     = parsed.protocol === 'https:' ? https : http;
+    const options = {
       hostname: parsed.hostname,
       port:     parsed.port || undefined,
       path:     parsed.pathname + parsed.search,
@@ -29,14 +28,12 @@ function rawRequest(url: string, opts: {
     };
 
     const req = lib.request(options, (res) => {
-      // Follow up to 3 redirects
       const loc = res.headers.location;
       if (loc && res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
-        const depth = opts.redirect ?? 0;
-        if (depth >= 3) { reject(new Error('重定向次数过多')); return; }
+        if ((opts._redirects ?? 0) >= 3) { reject(new Error('重定向次数过多')); return; }
         res.resume();
         const target = loc.startsWith('http') ? loc : `${parsed.origin}${loc}`;
-        rawRequest(target, { ...opts, redirect: depth + 1 }).then(resolve, reject);
+        rawRequest(target, { ...opts, _redirects: (opts._redirects ?? 0) + 1 }).then(resolve, reject);
         return;
       }
 
@@ -58,7 +55,7 @@ function parseJSON<T>(raw: RawResponse, url: string): T {
     throw new Error(
       `iLink API 返回空响应 (HTTP ${status})\n` +
       `  URL: ${url}\n` +
-      `  提示: 检查 iLink API 域名是否可用，或账号是否已开通 ClawBot`
+      `  提示: 检查网络是否可达 ilinkai.weixin.qq.com，或账号是否已开通 ClawBot`
     );
   }
   if (status >= 400) {
@@ -70,13 +67,16 @@ function parseJSON<T>(raw: RawResponse, url: string): T {
     throw new Error(
       `响应不是合法 JSON (HTTP ${status})\n` +
       `  URL: ${url}\n` +
-      `  响应前200字: ${body.slice(0, 200)}`
+      `  响应: ${body.slice(0, 200)}`
     );
   }
 }
 
 export class ILinkClient {
-  constructor(private token: string) {}
+  constructor(
+    private token:   string,
+    private baseurl: string,   // from TokenData.baseurl, may differ per account
+  ) {}
 
   private authHeaders(): Record<string, string> {
     return {
@@ -88,14 +88,14 @@ export class ILinkClient {
   }
 
   async get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-    const url = new URL(CONFIG.ILINK_BASE + path);
+    const url = new URL(this.baseurl + path);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const raw = await rawRequest(url.toString(), { headers: this.authHeaders() });
     return parseJSON<T>(raw, url.toString());
   }
 
   async post<T>(path: string, payload: unknown, timeoutMs = 10_000): Promise<T> {
-    const url = CONFIG.ILINK_BASE + path;
+    const url = this.baseurl + path;
     const raw = await rawRequest(url, {
       method:    'POST',
       headers:   this.authHeaders(),
@@ -106,10 +106,12 @@ export class ILinkClient {
   }
 }
 
-// Unauthenticated — used only during QR login
+// No auth — used only during QR login (always hits the default base)
 export class ILinkPreAuth {
+  constructor(private baseurl: string) {}
+
   async get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-    const url = new URL(CONFIG.ILINK_BASE + path);
+    const url = new URL(this.baseurl + path);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const raw = await rawRequest(url.toString(), {});
     return parseJSON<T>(raw, url.toString());
