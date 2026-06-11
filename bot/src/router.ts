@@ -230,9 +230,10 @@ export class Router {
                          ?? this.store.getLatest(userId, wsName)?.session_uuid
                          ?? null;
 
-    const textParts: string[] = [];
-    const tools:    string[]  = [];
-    let newSessionId           = existingUuid;
+    const textParts: string[]   = [];   // assistant 中间文字（兜底用）
+    const toolNames: Set<string> = new Set();  // 工具调用名称（去重）
+    let resultText   = '';              // Claude 最终摘要（优先发这个）
+    let newSessionId = existingUuid;
 
     try {
       const finalSid = await runClaude(
@@ -246,11 +247,11 @@ export class Router {
           switch (ev.type) {
             case 'session_id': if (ev.sessionId) newSessionId = ev.sessionId; break;
             case 'text':       if (ev.text)      textParts.push(ev.text);     break;
-            case 'tool':
-              if (ev.toolName) tools.push(`🔧 ${ev.toolName}(${(ev.toolInput ?? '').slice(0, 60)})`);
-              break;
+            case 'tool':       if (ev.toolName)  toolNames.add(ev.toolName);  break;
             case 'result':
-              if (ev.sessionId) newSessionId = ev.sessionId; break;
+              if (ev.sessionId) newSessionId = ev.sessionId;
+              if (ev.text)      resultText   = ev.text;
+              break;
           }
         },
       );
@@ -266,9 +267,25 @@ export class Router {
         this.activeSession.set(userId, newSessionId);
       }
 
-      const reply = (tools.length ? tools.join('\n') + '\n\n' : '')
-                  + (textParts.join('').trim() || '（任务完成，无文字输出）');
-      await this.reply(userId, reply);
+      // 工具行：仅展示名称，去重
+      const toolLine = toolNames.size
+        ? '🔧 ' + [...toolNames].join(' · ') + '\n\n'
+        : '';
+
+      // 正文：优先用 result 摘要；没有则截断 assistant 文字兜底
+      let body: string;
+      if (resultText.trim()) {
+        body = resultText.length > 600
+          ? resultText.slice(0, 600) + `\n…(共${resultText.length}字)`
+          : resultText;
+      } else {
+        const full = textParts.join('').trim();
+        body = full.length > 400
+          ? full.slice(0, 400) + `\n…(共${full.length}字，详情在工作区)`
+          : full || '（任务完成）';
+      }
+
+      await this.reply(userId, toolLine + body);
     } catch (err: any) {
       console.error('[router] error:', err.message);
       await this.reply(userId, `❌ 出错了：${err.message}`);
