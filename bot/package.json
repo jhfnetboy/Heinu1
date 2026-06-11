@@ -4,10 +4,11 @@
   "description": "WeChat iLink → Claude Code bridge for home laptop",
   "type": "commonjs",
   "scripts": {
-    "start": "tsx src/main.ts",
+    "start":   "tsx src/main.ts",
     "relogin": "tsx src/main.ts --relogin",
-    "logs": "tail -f ~/.heinu1-bot/bot.log",
-    "setup": "bash setup.sh"
+    "logs":    "tail -f ~/.heinu1-bot/bot.log",
+    "setup":   "bash setup.sh",
+    "ws":      "tsx src/cli.ts"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
