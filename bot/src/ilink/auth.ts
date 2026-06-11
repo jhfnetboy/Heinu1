@@ -9,8 +9,15 @@ export interface LoginResult { bot_token: string; baseurl: string; }
 export async function login(): Promise<LoginResult> {
   if (fs.existsSync(CONFIG.TOKEN_FILE)) {
     const data: TokenData = JSON.parse(fs.readFileSync(CONFIG.TOKEN_FILE, 'utf8'));
+    // Migrate old tokens that only stored the domain without /ilink/bot
+    let { baseurl } = data;
+    if (!baseurl.includes('/ilink/bot')) {
+      baseurl = baseurl.replace(/\/$/, '') + '/ilink/bot';
+      saveToken(data.bot_token, baseurl);  // persist fixed value
+      console.log('[auth] token baseurl 已自动修正');
+    }
     console.log('[auth] 使用已保存的 token');
-    return { bot_token: data.bot_token, baseurl: data.baseurl };
+    return { bot_token: data.bot_token, baseurl };
   }
   return doQRLogin();
 }
@@ -47,7 +54,11 @@ export async function doQRLogin(): Promise<LoginResult> {
       process.stdout.write('\r[auth] 已扫码，等待手机确认...     ');
     } else if (st.status === 'confirmed' && st.bot_token) {
       console.log('\n[auth] ✅ 登录成功！');
-      const baseurl = st.baseurl || CONFIG.ILINK_DEFAULT_BASE;
+      // Server returns the domain only (e.g. "https://ilinkai.weixin.qq.com").
+      // All bot API endpoints live under /ilink/bot/ — append it here so the
+      // ILinkClient never needs to know about this path prefix distinction.
+      const baseDomain = (st.baseurl || 'https://ilinkai.weixin.qq.com').replace(/\/$/, '');
+      const baseurl    = baseDomain + '/ilink/bot';
       saveToken(st.bot_token, baseurl);
       return { bot_token: st.bot_token, baseurl };
     }

@@ -80,10 +80,11 @@ export class ILinkClient {
 
   private authHeaders(): Record<string, string> {
     return {
-      'Content-Type':       'application/json',
-      'AuthorizationType':  'ilink_bot_token',
-      'Authorization':      `Bearer ${this.token}`,
-      'X-WECHAT-UIN':       makeUin(),
+      'Content-Type':            'application/json',
+      'AuthorizationType':       'ilink_bot_token',
+      'Authorization':           `Bearer ${this.token}`,
+      'X-WECHAT-UIN':            makeUin(),
+      'iLink-App-ClientVersion': '1',
     };
   }
 
