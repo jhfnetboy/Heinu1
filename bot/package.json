@@ -1,6 +1,6 @@
 {
   "name": "heinu1-wechat-bot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "WeChat iLink → Claude Code bridge for home laptop",
   "type": "commonjs",
   "scripts": {
