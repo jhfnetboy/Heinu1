@@ -26,6 +26,7 @@ export function runClaude(
     const args: string[] = [
       '--print', prompt,
       '--output-format', 'stream-json',
+      '--verbose',
       '--permission-mode', CONFIG.CLAUDE_PERMISSION_MODE,
     ];
 
