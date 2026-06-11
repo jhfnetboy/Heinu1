@@ -223,6 +223,9 @@ export class Router {
     const wsDef    = this.wsm.current(userId);
     this.sender.sendTyping(userId, this.contextTokens.get(userId)!);
 
+    const preview = prompt.length > 40 ? prompt.slice(0, 40) + '…' : prompt;
+    await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}\n📝 ${preview}`);
+
     const existingUuid = this.activeSession.get(userId)
                          ?? this.store.getLatest(userId, wsName)?.session_uuid
                          ?? null;
