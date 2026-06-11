@@ -7,3 +7,27 @@
 [submodule "libs/ChatGPT-weBot"]
 	path = libs/ChatGPT-weBot
 	url = https://github.com/SnapdragonLee/ChatGPT-weBot
+[submodule "libs/refs/wechat-clawbot"]
+	path = libs/refs/wechat-clawbot
+	url = https://github.com/nightsailer/wechat-clawbot
+[submodule "libs/refs/wechat-ilink-sdk"]
+	path = libs/refs/wechat-ilink-sdk
+	url = https://github.com/the-yex/wechat-ilink-sdk
+[submodule "libs/refs/weixin-bot-ilink"]
+	path = libs/refs/weixin-bot-ilink
+	url = https://github.com/epiral/weixin-bot
+[submodule "libs/refs/wechat-acp"]
+	path = libs/refs/wechat-acp
+	url = https://github.com/formulahendry/wechat-acp
+[submodule "libs/refs/wechat-claude-code"]
+	path = libs/refs/wechat-claude-code
+	url = https://github.com/Wechat-ggGitHub/wechat-claude-code
+[submodule "libs/refs/openilink-hub"]
+	path = libs/refs/openilink-hub
+	url = https://github.com/openilink/openilink-hub
+[submodule "libs/refs/wechatbot-sdk"]
+	path = libs/refs/wechatbot-sdk
+	url = https://github.com/corespeed-io/wechatbot
+[submodule "libs/refs/wechat-ai-bridge"]
+	path = libs/refs/wechat-ai-bridge
+	url = https://github.com/AliceLJY/wechat-ai-bridge
