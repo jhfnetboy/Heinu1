@@ -28,6 +28,7 @@ export class Router {
   private activeSession = new Map<string, string>();   // userId → session_uuid
   private contextTokens = new Map<string, string>();   // userId → context_token
   private running       = new Set<string>();
+  private aborts        = new Map<string, AbortController>();  // userId → in-flight task aborter
 
   constructor(
     private sender: Sender,
@@ -125,12 +126,16 @@ export class Router {
         break;
       }
 
-      case '/stop':
-        await this.reply(userId, this.running.has(userId)
-          ? '⚠️ 任务运行中，完成当前步骤后停止'
-          : '当前没有运行中的任务'
-        );
+      case '/stop': {
+        const aborter = this.aborts.get(userId);
+        if (this.running.has(userId) && aborter) {
+          aborter.abort();
+          await this.reply(userId, '🛑 已发送停止信号，正在终止当前任务');
+        } else {
+          await this.reply(userId, '当前没有运行中的任务');
+        }
         break;
+      }
 
       default:
         await this.reply(userId, `❓ 未知命令 ${cmd}，发 /help 查看帮助`);
@@ -218,6 +223,8 @@ export class Router {
       return;
     }
     this.running.add(userId);
+    const aborter = new AbortController();
+    this.aborts.set(userId, aborter);
 
     const wsName   = this.wsm.currentName(userId);
     const wsDef    = this.wsm.current(userId);
@@ -242,6 +249,7 @@ export class Router {
           sessionId: existingUuid,
           cwd:       wsDef.path,
           extraDirs: wsDef.extra_dirs,
+          signal:    aborter.signal,
         },
         (ev: RunEvent) => {
           switch (ev.type) {
@@ -265,6 +273,14 @@ export class Router {
           this.store.touch(newSessionId);
         }
         this.activeSession.set(userId, newSessionId);
+      }
+
+      // 被 /stop 中断：发已停止提示，不当成正常完成
+      if (aborter.signal.aborted) {
+        const partial = (resultText || textParts.join('')).trim();
+        await this.reply(userId, '🛑 任务已停止' +
+          (partial ? `\n\n（已完成部分）\n${partial.slice(0, 300)}` : ''));
+        return;
       }
 
       // 工具行：仅展示名称，去重
@@ -291,6 +307,7 @@ export class Router {
       await this.reply(userId, `❌ 出错了：${err.message}`);
     } finally {
       this.running.delete(userId);
+      this.aborts.delete(userId);
     }
   }
 

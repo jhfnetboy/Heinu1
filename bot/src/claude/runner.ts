@@ -5,6 +5,7 @@ export interface RunOptions {
   sessionId:  string | null;
   cwd:        string;          // working directory for Claude Code
   extraDirs?: string[];        // --add-dir paths
+  signal?:    AbortSignal;     // abort to kill the claude subprocess (/stop)
 }
 
 export interface RunEvent {
@@ -29,6 +30,12 @@ export function runClaude(
   onEvent: EventCallback,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    // Already-stopped before we even spawn
+    if (opts.signal?.aborted) {
+      resolve(opts.sessionId ?? '');
+      return;
+    }
+
     const args: string[] = [
       '--print', prompt,
       '--output-format', 'stream-json',
@@ -40,13 +47,19 @@ export function runClaude(
     for (const d of opts.extraDirs ?? []) args.push('--add-dir', d);
 
     const proc = spawn(CONFIG.CLAUDE_BIN, args, {
-      cwd:   opts.cwd,           // ← working directory
-      env:   { ...process.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd:    opts.cwd,          // ← working directory
+      env:    { ...process.env },
+      stdio:  ['ignore', 'pipe', 'pipe'],
+      signal: opts.signal,       // /stop aborts → process is killed (SIGTERM)
     });
 
     let finalSessionId = opts.sessionId ?? '';
+    let aborted = false;
     let buf = '';
+
+    // Mark aborts so the 'error'/'close' handlers resolve quietly instead of
+    // surfacing the kill as a task failure.
+    opts.signal?.addEventListener('abort', () => { aborted = true; }, { once: true });
 
     proc.stdout.on('data', (chunk: Buffer) => {
       buf += chunk.toString();
@@ -68,11 +81,19 @@ export function runClaude(
     });
 
     proc.on('close', (code) => {
-      if (code !== 0 && code !== null) reject(new Error(`claude 退出码 ${code}`));
+      if (aborted) resolve(finalSessionId);
+      else if (code !== 0 && code !== null) reject(new Error(`claude 退出码 ${code}`));
       else resolve(finalSessionId);
     });
 
-    proc.on('error', reject);
+    proc.on('error', (err: any) => {
+      // Killing via AbortSignal surfaces here as ABORT_ERR — not a real failure
+      if (aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
+        resolve(finalSessionId);
+      } else {
+        reject(err);
+      }
+    });
   });
 }
 
