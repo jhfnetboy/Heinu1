@@ -160,7 +160,9 @@ export class Router {
   /** Download IMAGE and FILE items, store localPath on the item in-place. */
   private async downloadTurnMedia(userId: string, items: TurnItem[]) {
     const downloads = items.filter(
-      i => (i.type === MessageItemType.IMAGE || i.type === MessageItemType.FILE) && !i.localPath
+      i => (i.type === MessageItemType.IMAGE ||
+            i.type === MessageItemType.FILE  ||
+            i.type === MessageItemType.VIDEO) && !i.localPath
     );
     if (!downloads.length) return;
 
@@ -175,7 +177,7 @@ export class Router {
           const img = item.rawItem.image_item!;
           data      = await downloadMedia(img.media, img.aeskey);
           filename  = `${randomUUID()}${guessExt(data)}`;
-        } else {
+        } else if (item.type === MessageItemType.FILE) {
           const f  = item.rawItem.file_item!;
           data     = await downloadMedia(f.media);
           const original = f.file_name ?? '';
@@ -183,6 +185,11 @@ export class Router {
             ? `${randomUUID()}-${original.replace(/[^a-zA-Z0-9._-]/g, '_')}`
             : `${randomUUID()}${guessExt(data)}`;
           item.fileName = original || filename;
+        } else {
+          // VIDEO — download the main video stream
+          const v  = item.rawItem.video_item!;
+          data     = await downloadMedia(v.media);
+          filename = `${randomUUID()}.mp4`;
         }
 
         item.localPath = await saveMedia(data, filename);
@@ -220,7 +227,9 @@ export class Router {
           else                      parts.push(`[文件: ${item.fileName ?? '未知'}]`);
           break;
         case MessageItemType.VIDEO:
-          parts.push('[视频]');
+          if (item.localPath)          parts.push(`[视频: ${item.localPath}]`);
+          else if (item.downloadError) parts.push(`[视频（下载失败: ${item.downloadError}）]`);
+          else                         parts.push('[视频]');
           break;
       }
     }

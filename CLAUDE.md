@@ -82,5 +82,5 @@ minimal environment.
   NOT this repo's location. The plist path must be fixed (or regenerated) before the service will
   run from a different checkout.
 - The WeChat-facing command set (`/ws`, `/new`, `/sessions`, `/resume`, `/status`, `/help`) is
-  defined entirely in `router.ts`'s `handleCommand`/`handleWs`. `/stop` is currently advisory only —
-  it does not actually kill the running `claude` subprocess.
+  defined entirely in `router.ts`'s `handleCommand`/`handleWs`. `/stop` works: it calls
+  `AbortController.abort()`, which kills the `claude` subprocess via the `signal` option on `spawn`.
