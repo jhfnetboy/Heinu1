@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import { WeixinMessage, MessageItem, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
 import { runClaude, RunEvent } from './claude/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
+import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 
 const HELP = `🦞 Claude Code 微信机器人
 
@@ -29,10 +31,12 @@ const HELP = `🦞 Claude Code 微信机器人
 // ── Turn buffer types ─────────────────────────────────────────────────────────
 
 interface TurnItem {
-  type:      MessageItemType;
-  text?:     string;       // TEXT body or VOICE transcription
-  fileName?: string;       // FILE original name
-  rawItem:   MessageItem;  // preserved for CDN download (Batch 2+)
+  type:           MessageItemType;
+  text?:          string;       // TEXT body or VOICE transcription
+  fileName?:      string;       // FILE original name
+  rawItem:        MessageItem;  // preserved for CDN download
+  localPath?:     string;       // set after successful CDN download
+  downloadError?: string;       // set if CDN download fails
 }
 
 interface PendingTurn {
@@ -146,8 +150,48 @@ export class Router {
       return;
     }
 
+    // Download media files before building the prompt
+    await this.downloadTurnMedia(userId, turn.items);
+
     const prompt = this.buildTurnPrompt(turn.items);
     await this.runTask(userId, prompt);
+  }
+
+  /** Download IMAGE and FILE items, store localPath on the item in-place. */
+  private async downloadTurnMedia(userId: string, items: TurnItem[]) {
+    const downloads = items.filter(
+      i => (i.type === MessageItemType.IMAGE || i.type === MessageItemType.FILE) && !i.localPath
+    );
+    if (!downloads.length) return;
+
+    await this.reply(userId, `📥 下载媒体文件 (${downloads.length} 个)...`);
+
+    for (const item of downloads) {
+      try {
+        let data: Buffer;
+        let filename: string;
+
+        if (item.type === MessageItemType.IMAGE) {
+          const img = item.rawItem.image_item!;
+          data      = await downloadMedia(img.media, img.aeskey);
+          filename  = `${randomUUID()}${guessExt(data)}`;
+        } else {
+          const f  = item.rawItem.file_item!;
+          data     = await downloadMedia(f.media);
+          const original = f.file_name ?? '';
+          filename = original
+            ? `${randomUUID()}-${original.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+            : `${randomUUID()}${guessExt(data)}`;
+          item.fileName = original || filename;
+        }
+
+        item.localPath = await saveMedia(data, filename);
+        console.log(`[router] 已下载: ${item.localPath} (${data.length} bytes)`);
+      } catch (err: any) {
+        console.error(`[router] 媒体下载失败: ${err.message}`);
+        item.downloadError = err.message;
+      }
+    }
   }
 
   private buildTurnPrompt(items: TurnItem[]): string {
@@ -166,10 +210,14 @@ export class Router {
           parts.push(item.text ? `[语音] ${item.text}` : '[语音（未识别）]');
           break;
         case MessageItemType.IMAGE:
-          parts.push('[图片]');
+          if (item.localPath)       parts.push(`[图片: ${item.localPath}]`);
+          else if (item.downloadError) parts.push(`[图片（下载失败: ${item.downloadError}）]`);
+          else                      parts.push('[图片]');
           break;
         case MessageItemType.FILE:
-          parts.push(`[文件: ${item.fileName ?? '未知'}]`);
+          if (item.localPath)       parts.push(`[文件: ${item.fileName ?? ''} → ${item.localPath}]`);
+          else if (item.downloadError) parts.push(`[文件: ${item.fileName ?? '未知'}（下载失败: ${item.downloadError}）]`);
+          else                      parts.push(`[文件: ${item.fileName ?? '未知'}]`);
           break;
         case MessageItemType.VIDEO:
           parts.push('[视频]');
@@ -394,7 +442,7 @@ export class Router {
         {
           sessionId: existingUuid,
           cwd:       wsDef.path,
-          extraDirs: wsDef.extra_dirs,
+          extraDirs: [...(wsDef.extra_dirs ?? []), CONFIG.MEDIA_DIR],
           signal:    aborter.signal,
         },
         (ev: RunEvent) => {
