@@ -43,7 +43,7 @@
 </td>
 <td align="center" width="50%">
 <img src="docs/images/bot-running.jpg" width="100%"/>
-<br/><sub><b>Bot 正常运行，实时收到微信消息</b></sub>
+<br/><sub><b>多平台 API 余额与用量监控（<code>see</code> 命令）</b></sub>
 </td>
 </tr>
 <tr>
