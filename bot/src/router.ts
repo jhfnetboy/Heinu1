@@ -50,6 +50,7 @@ export class Router {
   private running       = new Set<string>();
   private aborts        = new Map<string, AbortController>();
   private turns         = new Map<string, PendingTurn>();
+  private queued        = new Map<string, TurnItem[]>();   // turns waiting while task runs
 
   constructor(
     private sender: Sender,
@@ -146,7 +147,14 @@ export class Router {
     this.turns.delete(userId);
 
     if (this.running.has(userId)) {
-      await this.reply(userId, '⏳ 上一个任务还在运行，本轮消息已丢弃，请稍后重发');
+      // Queue instead of dropping — auto-executed after current task finishes
+      const existing = this.queued.get(userId);
+      if (existing) {
+        existing.push(...turn.items);
+      } else {
+        this.queued.set(userId, [...turn.items]);
+      }
+      await this.reply(userId, '⏳ 任务运行中，已加入队列，完成后自动处理');
       return;
     }
 
@@ -154,6 +162,16 @@ export class Router {
     await this.downloadTurnMedia(userId, turn.items);
 
     const prompt = this.buildTurnPrompt(turn.items);
+    await this.runTask(userId, prompt);
+  }
+
+  private async runQueued(userId: string) {
+    const items = this.queued.get(userId);
+    if (!items?.length) return;
+    this.queued.delete(userId);
+    await this.reply(userId, `🔄 继续处理队列消息 (${this.describeTurnItems(items)})...`);
+    await this.downloadTurnMedia(userId, items);
+    const prompt = this.buildTurnPrompt(items);
     await this.runTask(userId, prompt);
   }
 
@@ -320,29 +338,29 @@ export class Router {
         const uuid    = this.activeSession.get(userId);
         const session = uuid ? this.store.getByUuid(uuid) : undefined;
         const turn    = this.turns.get(userId);
+        const queue   = this.queued.get(userId);
         await this.reply(userId,
           `${this.running.has(userId) ? '🔄 运行中' : turn ? '⏳ 收集消息中' : '⏸ 空闲'}\n` +
           `工作区: ${ws} (${wsDef.path})\n` +
-          (turn ? `待处理: ${this.describeTurnItems(turn.items)}\n` : '') +
+          (turn  ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
+          (queue ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
           (session ? `会话: ${session.title}` : '无活跃会话')
         );
         break;
       }
 
       case '/stop': {
-        // First cancel any pending turn
-        if (this.cancelPendingTurn(userId)) {
-          await this.reply(userId, '🛑 已取消待处理的消息轮次');
-          return;
-        }
-        // Then abort any running task
+        const msgs: string[] = [];
+        if (this.cancelPendingTurn(userId)) msgs.push('消息收集轮次已取消');
+        if (this.queued.delete(userId))     msgs.push('队列已清空');
         const aborter = this.aborts.get(userId);
         if (this.running.has(userId) && aborter) {
           aborter.abort();
-          await this.reply(userId, '🛑 已发送停止信号，正在终止当前任务');
-        } else {
-          await this.reply(userId, '当前没有运行中的任务或待处理的轮次');
+          msgs.push('已终止当前任务');
         }
+        await this.reply(userId, msgs.length
+          ? '🛑 ' + msgs.join('，')
+          : '当前没有运行中的任务或待处理的轮次');
         break;
       }
 
@@ -508,6 +526,10 @@ export class Router {
     } finally {
       this.running.delete(userId);
       this.aborts.delete(userId);
+      // Fire queued turn if any (setImmediate so finally completes first)
+      if (this.queued.has(userId)) {
+        setImmediate(() => this.runQueued(userId));
+      }
     }
   }
 
