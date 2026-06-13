@@ -1,19 +1,21 @@
-import { WeixinMessage, MessageItemType } from './ilink/types';
+import { WeixinMessage, MessageItem, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
 import { runClaude, RunEvent } from './claude/runner';
 import { WorkspaceManager } from './workspace';
+import { CONFIG } from './config';
 
 const HELP = `🦞 Claude Code 微信机器人
 
 直接发消息 → Claude Code 帮你干活
+支持：文字、图片、语音、文件（含PDF）、视频
 
 ─ 会话命令 ─
-/new          开启新会话
+/new          开启新会话（也取消当前轮次）
 /sessions     本工作区历史会话
 /resume <n>   恢复第 n 个会话
 /status       查看当前状态
-/stop         请求停止任务
+/stop         停止任务或取消待发轮次
 
 ─ 工作区命令 ─
 /ws                   列出全部工作区
@@ -24,11 +26,26 @@ const HELP = `🦞 Claude Code 微信机器人
 
 /help         显示此帮助`;
 
+// ── Turn buffer types ─────────────────────────────────────────────────────────
+
+interface TurnItem {
+  type:      MessageItemType;
+  text?:     string;       // TEXT body or VOICE transcription
+  fileName?: string;       // FILE original name
+  rawItem:   MessageItem;  // preserved for CDN download (Batch 2+)
+}
+
+interface PendingTurn {
+  items: TurnItem[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class Router {
-  private activeSession = new Map<string, string>();   // userId → session_uuid
-  private contextTokens = new Map<string, string>();   // userId → context_token
+  private activeSession = new Map<string, string>();
+  private contextTokens = new Map<string, string>();
   private running       = new Set<string>();
-  private aborts        = new Map<string, AbortController>();  // userId → in-flight task aborter
+  private aborts        = new Map<string, AbortController>();
+  private turns         = new Map<string, PendingTurn>();
 
   constructor(
     private sender: Sender,
@@ -40,22 +57,147 @@ export class Router {
     const userId = msg.from_user_id;
     this.contextTokens.set(userId, msg.context_token);
 
-    const text = msg.item_list
-      ?.filter(i => i.type === MessageItemType.TEXT && i.text_item?.text)
-      .map(i => i.text_item!.text)
-      .join('')
-      .trim() ?? '';
-
-    if (!text) {
-      await this.reply(userId, '⚠️ 收到非文字消息，暂时只支持文字');
+    const items = msg.item_list ?? [];
+    if (!items.length) {
+      await this.reply(userId, '⚠️ 收到空消息');
       return;
     }
 
+    // Extract text content for command detection only
+    const text = items
+      .filter(i => i.type === MessageItemType.TEXT && i.text_item?.text)
+      .map(i => i.text_item!.text)
+      .join('')
+      .trim();
+
+    // Commands execute immediately, bypassing the turn buffer
     if (text.startsWith('/')) {
       await this.handleCommand(userId, text);
-    } else {
-      await this.runTask(userId, text);
+      return;
     }
+
+    // All other messages (text, image, voice, file, video) accumulate in the turn
+    await this.addToTurn(userId, items);
+  }
+
+  // ── Turn buffer ───────────────────────────────────────────────────────────
+
+  private async addToTurn(userId: string, msgItems: MessageItem[]) {
+    const newItems = this.toTurnItems(msgItems);
+    if (!newItems.length) return;
+
+    const existing = this.turns.get(userId);
+    const isFirst  = !existing;
+
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.items.push(...newItems);
+    }
+
+    const allItems = existing ? existing.items : newItems;
+    const timer    = setTimeout(() => this.flushTurn(userId), CONFIG.TURN_TIMEOUT_MS);
+    this.turns.set(userId, { items: allItems, timer });
+
+    if (isFirst) {
+      const sec     = CONFIG.TURN_TIMEOUT_MS / 1000;
+      const summary = this.describeTurnItems(newItems);
+      await this.reply(userId, `⏳ 收到：${summary}\n${sec}秒内可继续发送，之后开始处理`);
+    }
+    // Subsequent messages: WeChat delivery receipt is sufficient feedback
+  }
+
+  private toTurnItems(msgItems: MessageItem[]): TurnItem[] {
+    const result: TurnItem[] = [];
+    for (const item of msgItems) {
+      switch (item.type) {
+        case MessageItemType.TEXT:
+          if (item.text_item?.text?.trim()) {
+            result.push({ type: item.type, text: item.text_item.text.trim(), rawItem: item });
+          }
+          break;
+        case MessageItemType.VOICE:
+          result.push({
+            type:    item.type,
+            text:    item.voice_item?.text?.trim() || undefined,
+            rawItem: item,
+          });
+          break;
+        case MessageItemType.IMAGE:
+          result.push({ type: item.type, rawItem: item });
+          break;
+        case MessageItemType.FILE:
+          result.push({ type: item.type, fileName: item.file_item?.file_name, rawItem: item });
+          break;
+        case MessageItemType.VIDEO:
+          result.push({ type: item.type, rawItem: item });
+          break;
+      }
+    }
+    return result;
+  }
+
+  private async flushTurn(userId: string) {
+    const turn = this.turns.get(userId);
+    if (!turn) return;
+    this.turns.delete(userId);
+
+    if (this.running.has(userId)) {
+      await this.reply(userId, '⏳ 上一个任务还在运行，本轮消息已丢弃，请稍后重发');
+      return;
+    }
+
+    const prompt = this.buildTurnPrompt(turn.items);
+    await this.runTask(userId, prompt);
+  }
+
+  private buildTurnPrompt(items: TurnItem[]): string {
+    // Single plain-text message: pass through unchanged
+    if (items.length === 1 && items[0].type === MessageItemType.TEXT) {
+      return items[0].text!;
+    }
+
+    const parts: string[] = [];
+    for (const item of items) {
+      switch (item.type) {
+        case MessageItemType.TEXT:
+          parts.push(item.text!);
+          break;
+        case MessageItemType.VOICE:
+          parts.push(item.text ? `[语音] ${item.text}` : '[语音（未识别）]');
+          break;
+        case MessageItemType.IMAGE:
+          parts.push('[图片]');
+          break;
+        case MessageItemType.FILE:
+          parts.push(`[文件: ${item.fileName ?? '未知'}]`);
+          break;
+        case MessageItemType.VIDEO:
+          parts.push('[视频]');
+          break;
+      }
+    }
+    return parts.join('\n');
+  }
+
+  private describeTurnItems(items: TurnItem[]): string {
+    return items.map(i => {
+      switch (i.type) {
+        case MessageItemType.TEXT:  return '文字';
+        case MessageItemType.VOICE: return '语音';
+        case MessageItemType.IMAGE: return '图片';
+        case MessageItemType.FILE:  return i.fileName ? `文件(${i.fileName})` : '文件';
+        case MessageItemType.VIDEO: return '视频';
+        default: return '未知';
+      }
+    }).join(' + ');
+  }
+
+  private cancelPendingTurn(userId: string): boolean {
+    const turn = this.turns.get(userId);
+    if (!turn) return false;
+    clearTimeout(turn.timer);
+    this.turns.delete(userId);
+    return true;
   }
 
   // ── Commands ──────────────────────────────────────────────────────────────
@@ -76,12 +218,14 @@ export class Router {
       }
 
       case '/new': {
+        const hadTurn = this.cancelPendingTurn(userId);
         if (this.running.has(userId)) {
           await this.reply(userId, '⏳ 当前有任务运行，结束后再开新会话'); return;
         }
         this.activeSession.delete(userId);
         const ws = this.wsm.currentName(userId);
-        await this.reply(userId, `✅ 已重置会话\n工作区: ${ws}`);
+        await this.reply(userId,
+          `✅ 已重置会话\n工作区: ${ws}` + (hadTurn ? '\n（待处理的消息轮次已取消）' : ''));
         break;
       }
 
@@ -118,21 +262,29 @@ export class Router {
         const wsDef   = this.wsm.current(userId);
         const uuid    = this.activeSession.get(userId);
         const session = uuid ? this.store.getByUuid(uuid) : undefined;
+        const turn    = this.turns.get(userId);
         await this.reply(userId,
-          `${this.running.has(userId) ? '🔄 运行中' : '⏸ 空闲'}\n` +
+          `${this.running.has(userId) ? '🔄 运行中' : turn ? '⏳ 收集消息中' : '⏸ 空闲'}\n` +
           `工作区: ${ws} (${wsDef.path})\n` +
+          (turn ? `待处理: ${this.describeTurnItems(turn.items)}\n` : '') +
           (session ? `会话: ${session.title}` : '无活跃会话')
         );
         break;
       }
 
       case '/stop': {
+        // First cancel any pending turn
+        if (this.cancelPendingTurn(userId)) {
+          await this.reply(userId, '🛑 已取消待处理的消息轮次');
+          return;
+        }
+        // Then abort any running task
         const aborter = this.aborts.get(userId);
         if (this.running.has(userId) && aborter) {
           aborter.abort();
           await this.reply(userId, '🛑 已发送停止信号，正在终止当前任务');
         } else {
-          await this.reply(userId, '当前没有运行中的任务');
+          await this.reply(userId, '当前没有运行中的任务或待处理的轮次');
         }
         break;
       }
@@ -145,7 +297,6 @@ export class Router {
   // ── /ws subcommands ───────────────────────────────────────────────────────
 
   private async handleWs(userId: string, args: string[]) {
-    // /ws  (no args) → list
     if (!args.length) {
       const current = this.wsm.currentName(userId);
       const list    = this.wsm.list();
@@ -159,7 +310,6 @@ export class Router {
 
     const sub = args[0].toLowerCase();
 
-    // /ws add <name> <path> <description...>
     if (sub === 'add') {
       const [, name, wsPath, ...descParts] = args;
       if (!name || !wsPath) {
@@ -171,7 +321,6 @@ export class Router {
       return;
     }
 
-    // /ws rm <name>
     if (sub === 'rm' || sub === 'remove') {
       const name = args[1];
       if (!name) { await this.reply(userId, '用法: /ws rm <名称>'); return; }
@@ -180,7 +329,6 @@ export class Router {
       return;
     }
 
-    // /ws default <name>
     if (sub === 'default') {
       const name = args[1];
       if (!name) { await this.reply(userId, '用法: /ws default <名称>'); return; }
@@ -189,7 +337,7 @@ export class Router {
       return;
     }
 
-    // /ws <name>  → switch
+    // /ws <name> → switch
     if (this.running.has(userId)) {
       await this.reply(userId, '⏳ 有任务运行中，等完成后再切换工作区'); return;
     }
@@ -197,8 +345,6 @@ export class Router {
     const err  = this.wsm.switch(userId, name);
     if (err) { await this.reply(userId, `❌ ${err}`); return; }
 
-    // When switching workspace, clear active session so we resume
-    // the last session for the new workspace (or start fresh)
     this.activeSession.delete(userId);
     const wsDef    = this.wsm.current(userId);
     const lastSess = this.store.getLatest(userId, name);
@@ -226,20 +372,20 @@ export class Router {
     const aborter = new AbortController();
     this.aborts.set(userId, aborter);
 
-    const wsName   = this.wsm.currentName(userId);
-    const wsDef    = this.wsm.current(userId);
+    const wsName = this.wsm.currentName(userId);
+    const wsDef  = this.wsm.current(userId);
     this.sender.sendTyping(userId, this.contextTokens.get(userId)!);
 
-    const preview = prompt.length > 40 ? prompt.slice(0, 40) + '…' : prompt;
+    const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
     await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}\n📝 ${preview}`);
 
     const existingUuid = this.activeSession.get(userId)
                          ?? this.store.getLatest(userId, wsName)?.session_uuid
                          ?? null;
 
-    const textParts: string[]   = [];   // assistant 中间文字（兜底用）
-    const toolNames: Set<string> = new Set();  // 工具调用名称（去重）
-    let resultText   = '';              // Claude 最终摘要（优先发这个）
+    const textParts: string[]    = [];
+    const toolNames: Set<string> = new Set();
+    let resultText   = '';
     let newSessionId = existingUuid;
 
     try {
@@ -275,7 +421,6 @@ export class Router {
         this.activeSession.set(userId, newSessionId);
       }
 
-      // 被 /stop 中断：发已停止提示，不当成正常完成
       if (aborter.signal.aborted) {
         const partial = (resultText || textParts.join('')).trim();
         await this.reply(userId, '🛑 任务已停止' +
@@ -283,12 +428,10 @@ export class Router {
         return;
       }
 
-      // 工具行：仅展示名称，去重
       const toolLine = toolNames.size
         ? '🔧 ' + [...toolNames].join(' · ') + '\n\n'
         : '';
 
-      // 正文：优先用 result 摘要；没有则截断 assistant 文字兜底
       let body: string;
       if (resultText.trim()) {
         body = resultText.length > 600

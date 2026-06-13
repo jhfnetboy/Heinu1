@@ -6,12 +6,14 @@ export const CONFIG = {
   TOKEN_FILE:      path.join(os.homedir(), '.heinu1-bot', 'token.json'),
   DB_FILE:         path.join(os.homedir(), '.heinu1-bot', 'sessions.db'),
   WORKSPACES_FILE: path.join(os.homedir(), '.heinu1-bot', 'workspaces.json'),
+  MEDIA_DIR:       path.join(os.homedir(), '.heinu1-bot', 'media'),
 
   // Domain only — /ilink/bot/* prefix is in each endpoint path
   ILINK_DEFAULT_BASE: 'https://ilinkai.weixin.qq.com',
 
   POLL_TIMEOUT_MS:    40_000,   // match reference: 40s
   RECONNECT_DELAY_MS: 3_000,
+  TURN_TIMEOUT_MS:    10_000,   // 10s silence = turn complete, start executing
 
   CLAUDE_BIN:             process.env.CLAUDE_BIN || 'claude',
   CLAUDE_PERMISSION_MODE: process.env.CLAUDE_PERMISSION_MODE || 'bypassPermissions',
