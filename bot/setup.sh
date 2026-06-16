@@ -22,7 +22,16 @@ echo ""
 # 2. 权限
 chmod +x "$SCRIPT_DIR/start.sh"
 
-# 3. 创建数据目录
+# 3. 安装 bin 工具到 ~/bin
+echo "🔧 安装 bin 工具..."
+mkdir -p "$HOME/bin"
+cp "$SCRIPT_DIR/../bin/provider_balance.py" "$HOME/bin/provider_balance.py"
+chmod +x "$HOME/bin/provider_balance.py"
+echo "   ✅ provider_balance.py → ~/bin/"
+echo "      用法：python3 ~/bin/provider_balance.py  (或配置 see 别名)"
+echo ""
+
+# 4. 创建数据目录
 mkdir -p "$DATA_DIR"
 
 # 4. 安装 launchd plist（用本机实际路径替换模板占位符）
