@@ -31,3 +31,6 @@
 [submodule "libs/refs/wechat-ai-bridge"]
 	path = libs/refs/wechat-ai-bridge
 	url = https://github.com/AliceLJY/wechat-ai-bridge
+[submodule "libs/agent-reach"]
+	path = libs/agent-reach
+	url = https://github.com/Panniantong/Agent-Reach
