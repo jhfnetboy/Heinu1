@@ -4,6 +4,9 @@
 # Homebrew (Apple Silicon / Intel)
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# Claude Code CLI (~/.local/bin/claude)
+export PATH="$HOME/.local/bin:$PATH"
+
 # nvm (if installed)
 export NVM_DIR="$HOME/.nvm"
 # shellcheck disable=SC1091
