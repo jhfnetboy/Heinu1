@@ -17,6 +17,7 @@ const HELP = `🦞 Claude Code 微信机器人
 /sessions     本工作区历史会话
 /resume <n>   恢复第 n 个会话
 /status       查看当前状态
+/retry        重试上次失败的任务
 /stop         停止任务或取消待发轮次
 
 ─ 工作区命令 ─
@@ -51,6 +52,7 @@ export class Router {
   private aborts        = new Map<string, AbortController>();
   private turns         = new Map<string, PendingTurn>();
   private queued        = new Map<string, TurnItem[]>();   // turns waiting while task runs
+  private lastFailed    = new Map<string, string>();       // prompt of last failed task, for /retry
 
   constructor(
     private sender: Sender,
@@ -339,13 +341,28 @@ export class Router {
         const session = uuid ? this.store.getByUuid(uuid) : undefined;
         const turn    = this.turns.get(userId);
         const queue   = this.queued.get(userId);
+        const failed  = this.lastFailed.get(userId);
         await this.reply(userId,
           `${this.running.has(userId) ? '🔄 运行中' : turn ? '⏳ 收集消息中' : '⏸ 空闲'}\n` +
           `工作区: ${ws} (${wsDef.path})\n` +
-          (turn  ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
-          (queue ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
+          (turn    ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
+          (queue   ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
+          (failed  ? `❌ 上次失败: ${failed.slice(0, 60)}${failed.length > 60 ? '…' : ''}\n   发 /retry 重试\n` : '') +
           (session ? `会话: ${session.title}` : '无活跃会话')
         );
+        break;
+      }
+
+      case '/retry': {
+        const failed = this.lastFailed.get(userId);
+        if (!failed) {
+          await this.reply(userId, '没有可重试的任务'); break;
+        }
+        if (this.running.has(userId)) {
+          await this.reply(userId, '⏳ 有任务运行中，等完成后再重试'); break;
+        }
+        this.lastFailed.delete(userId);
+        await this.runTask(userId, failed);
         break;
       }
 
@@ -522,7 +539,8 @@ export class Router {
       await this.reply(userId, toolLine + body);
     } catch (err: any) {
       console.error('[router] error:', err.message);
-      await this.reply(userId, `❌ 出错了：${err.message}`);
+      this.lastFailed.set(userId, prompt);
+      await this.reply(userId, `❌ 出错了：${err.message}\n💡 发 /retry 可重试`);
     } finally {
       this.running.delete(userId);
       this.aborts.delete(userId);
