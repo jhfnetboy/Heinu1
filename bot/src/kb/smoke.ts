@@ -69,9 +69,30 @@ const goodBlock = '```kb-record\n' + JSON.stringify({
   title: 't', summary: 's', tags: [], entities: [], content_type: 'url',
   saved_files: [okPath, '/etc/passwd', '../../secret', 'relative.jpg'],
 }) + '\n```';
+// the accepted path is realpath'd; on macOS MEDIA_DIR under $HOME has no
+// symlink components, so realpath(okPath) === okPath. Create the file first.
+fs.mkdirSync(CONFIG.MEDIA_DIR, { recursive: true });
+fs.writeFileSync(okPath, 'img');
 const sf = parseKbRecord(goodBlock)!.saved_files;
-assert(sf.length === 1 && sf[0] === okPath, 'only in-MEDIA_DIR saved_file accepted, traversal rejected');
+assert(sf.length === 1 && sf[0] === fs.realpathSync.native(okPath),
+  'only in-MEDIA_DIR saved_file accepted, traversal rejected');
 assert(parseKbRecord(goodBlock)!.content_type === 'url', 'url content_type accepted');
+
+// ── symlink bypass must be rejected (High #1) ──
+// A symlink planted UNDER MEDIA_DIR whose target is outside all allowed roots
+// must not be archived (realpath resolves it to the out-of-root target).
+const outTarget = path.join(os.homedir(), '.kb-smoke-fake-secret');
+fs.writeFileSync(outTarget, 'pretend id_rsa');
+const evilLink = path.join(CONFIG.MEDIA_DIR, 'innocent.jpg');
+try { fs.unlinkSync(evilLink); } catch {}
+fs.symlinkSync(outTarget, evilLink);
+const evilBlock = '```kb-record\n' + JSON.stringify({
+  title: 't', summary: 's', tags: [], entities: [], content_type: 'url',
+  saved_files: [evilLink],
+}) + '\n```';
+assert(parseKbRecord(evilBlock)!.saved_files.length === 0,
+  'symlink under MEDIA_DIR pointing outside roots is rejected');
+fs.unlinkSync(outTarget);
 
 // ── archiveRawFiles ──
 const tmpSrc = path.join(os.tmpdir(), 'kb-smoke-src.txt');

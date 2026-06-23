@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -45,11 +46,15 @@ export const KB_INSTRUCTION = `
  * images into MEDIA_DIR, and report their absolute paths in `saved_files` so
  * the bot can archive them. Appended INSTEAD of KB_INSTRUCTION for URL turns.
  */
-export function buildUrlInstruction(urls: string[]): string {
+export function buildUrlInstruction(urls: string[], mediaPaths: string[] = []): string {
+  const mediaNote = mediaPaths.length
+    ? `\n（用户还上传了图片，请一并参考：${mediaPaths.join('、')}）`
+    : '';
   return `
 
 ---
-[知识库录入·链接抓取] 这条消息包含链接，需要抓取内容后存入知识库。请按以下步骤：
+[知识库录入·链接抓取] 这条消息包含链接，需要抓取内容后存入知识库。${mediaNote}
+请按以下步骤：
 1. 用 agent-reach skill 抓取这些链接的正文内容（小红书/公众号/网页都用 agent-reach，按它的 doctor 选对应后端；网页可用 Jina Reader）：
 ${urls.map(u => `   - ${u}`).join('\n')}
 2. 如果有配图，把图片下载到目录 ${CONFIG.MEDIA_DIR}/ 下（文件名随意，保留扩展名）。
@@ -72,8 +77,11 @@ ${urls.map(u => `   - ${u}`).join('\n')}
 /** Extract http/https URLs from free text. */
 export function extractUrls(text: string): string[] {
   const matches = text.match(/https?:\/\/[^\s，。、）)】\]]+/g) ?? [];
-  // de-dup, cap to a sane number
-  return [...new Set(matches)].slice(0, 5);
+  const cleaned = matches
+    // strip trailing sentence punctuation (ASCII + fullwidth) the regex may grab
+    .map(u => u.replace(/[.,;:!?。，、；：！？]+$/u, ''))
+    .filter(Boolean);
+  return [...new Set(cleaned)].slice(0, 5);   // de-dup, cap to a sane number
 }
 
 /**
@@ -90,7 +98,9 @@ export function archiveRawFiles(localPaths: string[], date = new Date()): string
   const archived: string[] = [];
   for (const src of localPaths) {
     try {
-      const dest = path.join(destDir, path.basename(src));
+      // Prefix with a short uuid so two records with same-named files (e.g.
+      // both "image.jpg" from different URLs) never overwrite each other.
+      const dest = path.join(destDir, `${randomUUID().slice(0, 8)}-${path.basename(src)}`);
       fs.copyFileSync(src, dest);
       archived.push(dest);
     } catch (err: any) {
@@ -143,14 +153,16 @@ export function stripKbRecord(text: string): string {
 }
 
 /** Fallback record built from raw text when no/invalid kb-record block. */
-export function fallbackRecord(rawText: string, hasMedia: boolean): ParsedKbRecord {
+export function fallbackRecord(rawText: string, hasMedia: boolean, hasUrl = false): ParsedKbRecord {
   const firstLine = (rawText.split('\n').find(l => l.trim()) ?? '').trim();
+  const contentType = hasUrl ? 'url' : hasMedia ? 'mixed' : 'text';
+  const titleFallback = hasUrl ? '(链接记录)' : hasMedia ? '(媒体记录)' : '(无标题记录)';
   return {
-    title:        firstLine.slice(0, 30) || (hasMedia ? '(媒体记录)' : '(无标题记录)'),
+    title:        firstLine.slice(0, 30) || titleFallback,
     summary:      rawText.slice(0, 200),
     tags:         [],
     entities:     [],
-    content_type: hasMedia ? 'mixed' : 'text',
+    content_type: contentType,
     saved_files:  [],
   };
 }
@@ -167,25 +179,38 @@ function normalizeType(v: unknown): string {
 
 /**
  * Validate Claude-reported downloaded file paths before the bot copies them.
- * Only absolute paths that (after symlink-resolving the parent) live under an
+ * Only absolute paths whose REAL path (symlinks fully resolved) lives under an
  * allowed root — MEDIA_DIR, KB_DIR, or the OS temp dir — are accepted. This
- * stops a confused/poisoned model from making the bot archive arbitrary files
- * (e.g. ~/.ssh/id_rsa) via path traversal or absolute paths.
+ * stops a confused/prompt-injected model from making the bot archive arbitrary
+ * files (e.g. ~/.ssh/id_rsa) via path traversal OR via a symlink planted under
+ * MEDIA_DIR that points outside it. Roots are realpath'd too because on macOS
+ * os.tmpdir() (/var/...) and the home dir can themselves sit behind symlinks.
  */
 function safeSavedFiles(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   const roots = [CONFIG.MEDIA_DIR, CONFIG.KB_DIR, os.tmpdir()]
-    .map(r => path.resolve(r) + path.sep);
+    .map(realpathOrResolve)
+    .map(r => r + path.sep);
   const out: string[] = [];
   for (const item of v.slice(0, 20)) {
     const p = String(item).trim();
     if (!p || !path.isAbsolute(p)) continue;
-    const resolved = path.resolve(p);
-    if (roots.some(root => (resolved + path.sep).startsWith(root))) {
-      out.push(resolved);
+    let real: string;
+    try {
+      real = fs.realpathSync.native(p);   // resolves symlinks; throws if missing
+    } catch {
+      console.error(`[kb] 拒绝归档无法解析的文件: ${p}`);
+      continue;
+    }
+    if (roots.some(root => (real + path.sep).startsWith(root))) {
+      out.push(real);
     } else {
-      console.error(`[kb] 拒绝归档越界文件: ${p}`);
+      console.error(`[kb] 拒绝归档越界文件: ${p} → ${real}`);
     }
   }
   return out;
+}
+
+function realpathOrResolve(p: string): string {
+  try { return fs.realpathSync.native(p); } catch { return path.resolve(p); }
 }
