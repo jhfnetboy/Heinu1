@@ -148,7 +148,10 @@ export class KbStore {
    * becomes the phrase "烤 鸭", matching consecutive chars in the segmented body.
    */
   private toMatchQuery(query: string): string {
-    const terms = query.split(/\s+/).map(t => t.trim()).filter(Boolean);
+    // Strip control chars first — a NUL inside a quoted FTS5 phrase makes
+    // the parser throw "unterminated string".
+    const clean = query.replace(/[\x00-\x1f\x7f]/g, ' ');
+    const terms = clean.split(/\s+/).map(t => t.trim()).filter(Boolean);
     const phrases = terms
       .map(t => segmentCJK(t).replace(/"/g, '').trim())  // strip quotes first
       .filter(Boolean)                                    // drop empties (lone punctuation)

@@ -89,4 +89,14 @@ assert(kb.count('user1') === 2, 'count = 2');
 // isolation by user
 assert(kb.search('user2', '西湖').length === 0, 'search isolated per user');
 
+// ── control chars (NUL) must not throw FTS5 "unterminated string" ──
+let nulOk = true;
+try { kb.search('user1', 'a\u0000b'); } catch { nulOk = false; }
+assert(nulOk, 'NUL char in query does not throw');
+let ctrlOk = true;
+try { kb.search('user1', '\u0001\u0002西湖\u0000烤鸭'); } catch { ctrlOk = false; }
+assert(ctrlOk, 'control chars mixed with CJK do not throw');
+// NUL between two CJK terms still matches (NUL -> space -> two terms)
+assert(kb.search('user1', '\u0000西湖\u0000').length >= 1, 'NUL-wrapped CJK term still matches');
+
 console.log('\n🎉 ALL KB SMOKE TESTS PASSED');
