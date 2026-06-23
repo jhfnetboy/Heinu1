@@ -32,6 +32,19 @@ assert(stripped.includes('西湖的樱花照片'), 'human text preserved');
 assert(parseKbRecord('no block here') === null, 'missing block returns null');
 assert(parseKbRecord('```kb-record\n{bad json}\n```') === null, 'bad json returns null');
 
+// ── last block wins (claude may quote the example first) ──
+const twoBlocks = '```kb-record\n{"title":"示例"}\n```\n实际结果\n```kb-record\n{"title":"真实标题"}\n```';
+assert(parseKbRecord(twoBlocks)!.title === '真实标题', 'last kb-record block wins');
+
+// ── oversized block rejected ──
+const huge = '```kb-record\n{"title":"' + 'x'.repeat(20000) + '"}\n```';
+assert(parseKbRecord(huge) === null, 'oversized block rejected');
+
+// ── unclosed fence stripped (never leak malformed block) ──
+const unclosed = '这是结果\n```kb-record\n{"title":"没闭合';
+assert(!stripKbRecord(unclosed).includes('kb-record'), 'unclosed fence stripped');
+assert(stripKbRecord(unclosed).includes('这是结果'), 'text before unclosed fence kept');
+
 // ── fallbackRecord ──
 const fb = fallbackRecord('第一行内容\n第二行', true);
 assert(fb.title === '第一行内容', 'fallback title = first line');

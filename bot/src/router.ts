@@ -559,27 +559,33 @@ export class Router {
     const aborter = new AbortController();
     this.aborts.set(userId, aborter);
 
+    // Everything from here is inside try/finally so a throw during setup
+    // (reply / workspace lookup) can never strand `running` and deadlock the user.
     const wsName = this.wsm.currentName(userId);
-    const wsDef  = this.wsm.current(userId);
-    this.sender.sendTyping(userId, this.contextTokens.get(userId)!);
-
-    const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
-    await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
-      (kbCtx ? '（自动入库）' : '') + `\n📝 ${preview}`);
-
-    // Piggyback KB extraction on this single claude run — no extra LLM call.
-    const claudePrompt = kbCtx ? prompt + KB_INSTRUCTION : prompt;
-
-    const existingUuid = this.activeSession.get(userId)
-                         ?? this.store.getLatest(userId, wsName)?.session_uuid
-                         ?? null;
 
     const textParts: string[]    = [];
     const toolNames: Set<string> = new Set();
     let resultText   = '';
-    let newSessionId = existingUuid;
+    let newSessionId: string | null = null;
 
     try {
+      const wsDef = this.wsm.current(userId);
+      // best-effort typing indicator — never let it surface as an unhandled rejection
+      Promise.resolve(this.sender.sendTyping(userId, this.contextTokens.get(userId)!))
+        .catch(() => {});
+
+      const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
+      await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
+        (kbCtx ? '（自动入库）' : '') + `\n📝 ${preview}`);
+
+      // Piggyback KB extraction on this single claude run — no extra LLM call.
+      const claudePrompt = kbCtx ? prompt + KB_INSTRUCTION : prompt;
+
+      const existingUuid = this.activeSession.get(userId)
+                           ?? this.store.getLatest(userId, wsName)?.session_uuid
+                           ?? null;
+      newSessionId = existingUuid;
+
       const finalSid = await runClaude(
         claudePrompt,
         {
@@ -624,13 +630,12 @@ export class Router {
         : '';
 
       // KB ingest: extract the kb-record block, archive files, write a record.
-      // The block is stripped from the text shown back to the user.
+      // Parse and strip from the SAME text so a parsed block can never leak.
       let kbLine = '';
       let displaySource = resultText.trim() ? resultText : textParts.join('');
       if (kbCtx) {
-        const combined = `${resultText}\n${textParts.join('')}`;
-        const parsed   = parseKbRecord(combined) ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia);
-        displaySource  = stripKbRecord(displaySource);
+        const parsed  = parseKbRecord(displaySource) ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia);
+        displaySource = stripKbRecord(displaySource);
         try {
           const archived = archiveRawFiles(kbCtx.rawPaths);
           const rec = this.kb.insert({
@@ -670,9 +675,14 @@ export class Router {
     } finally {
       this.running.delete(userId);
       this.aborts.delete(userId);
-      // Fire queued turn if any (setImmediate so finally completes first)
+      // Fire queued turn if any (setImmediate so finally completes first).
+      // Guard the async call so a throw inside runQueued can't become an
+      // unhandled rejection that crashes the daemon.
       if (this.queued.has(userId)) {
-        setImmediate(() => this.runQueued(userId));
+        setImmediate(() => {
+          this.runQueued(userId).catch(err =>
+            console.error('[router] runQueued error:', err?.message ?? err));
+        });
       }
     }
   }

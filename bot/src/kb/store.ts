@@ -113,7 +113,7 @@ export class KbStore {
       SELECT r.* FROM records_fts f
       JOIN records r ON r.id = f.rowid
       WHERE f.records_fts MATCH ? AND r.user_openid = ?
-      ORDER BY rank
+      ORDER BY rank, r.created_at DESC, r.id DESC
       LIMIT ?
     `).all(match, userOpenid, limit) as Row[];
     return rows.map(r => this.hydrate(r));
@@ -150,17 +150,20 @@ export class KbStore {
   private toMatchQuery(query: string): string {
     const terms = query.split(/\s+/).map(t => t.trim()).filter(Boolean);
     const phrases = terms
-      .map(t => segmentCJK(t).trim())
-      .filter(Boolean)
-      .map(seg => `"${seg.replace(/"/g, '')}"`);
+      .map(t => segmentCJK(t).replace(/"/g, '').trim())  // strip quotes first
+      .filter(Boolean)                                    // drop empties (lone punctuation)
+      .map(seg => `"${seg}"`);
     return phrases.join(' OR ');
   }
 }
 
-/** Insert a space around every CJK character so unicode61 tokenizes per-char. */
+/**
+ * Insert a space around every CJK character so unicode61 tokenizes per-char.
+ * Uses Unicode script properties (covers Han incl. astral-plane extensions,
+ * plus Japanese kana) rather than hard-coded BMP ranges.
+ */
 function segmentCJK(text: string): string {
-  // CJK Unified Ideographs + common extensions + Japanese kana ranges.
-  return text.replace(/[㐀-鿿豈-﫿぀-ヿ]/g, c => ` ${c} `)
+  return text.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu, c => ` ${c} `)
     .replace(/\s+/g, ' ')
     .trim();
 }

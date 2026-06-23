@@ -61,18 +61,25 @@ export function archiveRawFiles(localPaths: string[], date = new Date()): string
   return archived;
 }
 
+const MAX_BLOCK_LEN = 10_000;   // cap to avoid pathologically large JSON.parse
+
 /**
- * Extract and parse the ```kb-record JSON block from Claude's response text.
- * Returns null if absent or unparseable.
+ * Extract and parse the kb-record JSON block from Claude's response text.
+ * Uses the LAST fenced block (Claude may quote the instruction's example
+ * earlier; the real record is appended at the end). Returns null if absent,
+ * oversized, or unparseable.
  */
 export function parseKbRecord(text: string): ParsedKbRecord | null {
-  const m = text.match(/```kb-record\s*([\s\S]*?)```/);
-  if (!m) return null;
+  const matches = [...text.matchAll(/```kb-record\s*([\s\S]*?)```/g)];
+  if (!matches.length) return null;
+  const raw = matches[matches.length - 1][1].trim();
+  if (!raw || raw.length > MAX_BLOCK_LEN) return null;
   try {
-    const obj = JSON.parse(m[1].trim());
+    const obj = JSON.parse(raw);
+    if (typeof obj !== 'object' || obj === null) return null;
     return {
       title:        String(obj.title ?? '').slice(0, 80),
-      summary:      String(obj.summary ?? ''),
+      summary:      String(obj.summary ?? '').slice(0, 1000),
       tags:         toStringArray(obj.tags),
       entities:     toStringArray(obj.entities),
       content_type: normalizeType(obj.content_type),
@@ -82,9 +89,17 @@ export function parseKbRecord(text: string): ParsedKbRecord | null {
   }
 }
 
-/** Strip the ```kb-record block out of the reply shown to the user. */
+/**
+ * Strip kb-record blocks from the reply shown to the user. Removes both
+ * properly-fenced blocks AND a trailing unclosed ```kb-record fragment
+ * (malformed output must never leak to the user).
+ */
 export function stripKbRecord(text: string): string {
-  return text.replace(/```kb-record\s*[\s\S]*?```/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  return text
+    .replace(/```kb-record\s*[\s\S]*?```/g, '')  // closed blocks
+    .replace(/```kb-record[\s\S]*$/, '')          // trailing unclosed fragment
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** Fallback record built from raw text when no/invalid kb-record block. */
