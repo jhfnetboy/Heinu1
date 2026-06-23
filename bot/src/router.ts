@@ -505,7 +505,15 @@ export class Router {
     if (args[0]?.toLowerCase() === 'search') {
       const query = args.slice(1).join(' ').trim();
       if (!query) { await this.reply(userId, '用法: /kb search <关键词>'); return; }
-      const hits = this.kb.search(userId, query);
+      let hits;
+      try {
+        hits = this.kb.search(userId, query);
+      } catch (err: any) {
+        // Defense in depth: toMatchQuery sanitizes input, but never let a
+        // malformed FTS5 query crash command handling.
+        console.error('[kb] search error:', err.message);
+        await this.reply(userId, '🔍 搜索词无法解析，换个关键词试试'); return;
+      }
       if (!hits.length) {
         await this.reply(userId, `🔍 没有匹配 "${query}" 的记录`); return;
       }
@@ -559,17 +567,18 @@ export class Router {
     const aborter = new AbortController();
     this.aborts.set(userId, aborter);
 
-    // Everything from here is inside try/finally so a throw during setup
-    // (reply / workspace lookup) can never strand `running` and deadlock the user.
-    const wsName = this.wsm.currentName(userId);
-
     const textParts: string[]    = [];
     const toolNames: Set<string> = new Set();
     let resultText   = '';
     let newSessionId: string | null = null;
 
+    // Everything that can throw lives inside try/finally so a failure during
+    // setup (workspace lookup / reply) can never strand `running` and deadlock
+    // the user. The only statements above are AbortController + Map.set, which
+    // cannot throw.
     try {
-      const wsDef = this.wsm.current(userId);
+      const wsName = this.wsm.currentName(userId);
+      const wsDef  = this.wsm.current(userId);
       // best-effort typing indicator — never let it surface as an unhandled rejection
       Promise.resolve(this.sender.sendTyping(userId, this.contextTokens.get(userId)!))
         .catch(() => {});
