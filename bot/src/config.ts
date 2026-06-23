@@ -8,6 +8,11 @@ export const CONFIG = {
   WORKSPACES_FILE: path.join(os.homedir(), '.heinu1-bot', 'workspaces.json'),
   MEDIA_DIR:       path.join(os.homedir(), '.heinu1-bot', 'media'),
 
+  // Knowledge base (KB) — Phase 1: raw archive + SQLite/FTS5 records
+  KB_DIR:     path.join(os.homedir(), '.heinu1-bot', 'kb'),
+  KB_DB_FILE: path.join(os.homedir(), '.heinu1-bot', 'kb', 'kb.db'),
+  KB_RAW_DIR: path.join(os.homedir(), '.heinu1-bot', 'kb', 'raw'),
+
   // Domain only — /ilink/bot/* prefix is in each endpoint path
   ILINK_DEFAULT_BASE: 'https://ilinkai.weixin.qq.com',
 
