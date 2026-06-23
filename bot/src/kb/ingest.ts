@@ -1,4 +1,6 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { CONFIG } from '../config';
 
@@ -19,6 +21,7 @@ export interface ParsedKbRecord {
   tags:         string[];
   entities:     string[];
   content_type: string;
+  saved_files:  string[];   // image/file paths Claude downloaded (URL ingest)
 }
 
 /** Appended to the user's prompt when the turn is ingest-worthy. */
@@ -38,6 +41,50 @@ export const KB_INSTRUCTION = `
 \`\`\``;
 
 /**
+ * Instruction for turns whose text contains a URL (XiaoHongShu / 公众号 /
+ * web article). Tells Claude to fetch via the agent-reach skill, download
+ * images into MEDIA_DIR, and report their absolute paths in `saved_files` so
+ * the bot can archive them. Appended INSTEAD of KB_INSTRUCTION for URL turns.
+ */
+export function buildUrlInstruction(urls: string[], mediaPaths: string[] = []): string {
+  const mediaNote = mediaPaths.length
+    ? `\n（用户还上传了图片，请一并参考：${mediaPaths.join('、')}）`
+    : '';
+  return `
+
+---
+[知识库录入·链接抓取] 这条消息包含链接，需要抓取内容后存入知识库。${mediaNote}
+请按以下步骤：
+1. 用 agent-reach skill 抓取这些链接的正文内容（小红书/公众号/网页都用 agent-reach，按它的 doctor 选对应后端；网页可用 Jina Reader）：
+${urls.map(u => `   - ${u}`).join('\n')}
+2. 如果有配图，把图片下载到目录 ${CONFIG.MEDIA_DIR}/ 下（文件名随意，保留扩展名）。
+3. 用抓取到的正文做摘要和信息提取。
+4. 在回复的最末尾追加一个 \`\`\`kb-record 代码块，JSON 字段：
+- title: 一句话标题（≤30字）
+- summary: 2-4句话的要点摘要（基于抓取的正文）
+- tags: 主题标签数组（3-6个）
+- entities: 人名/地名/品牌/项目数组（没有则空数组）
+- content_type: 固定填 "url"
+- saved_files: 你下载的图片的绝对路径数组（没有下载图片则空数组 []）
+
+示例：
+\`\`\`kb-record
+{"title":"小红书：杭州咖啡探店","summary":"博主推荐了3家杭州小众咖啡馆，主打手冲和氛围感。人均40-60元。","tags":["咖啡","探店","杭州"],"entities":["杭州"],"content_type":"url","saved_files":["${CONFIG.MEDIA_DIR}/abc.jpg"]}
+\`\`\`
+注意：抓取失败时也要输出 kb-record（summary 写明抓取失败 + 链接本身），不要中断。`;
+}
+
+/** Extract http/https URLs from free text. */
+export function extractUrls(text: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s，。、）)】\]]+/g) ?? [];
+  const cleaned = matches
+    // strip trailing sentence punctuation (ASCII + fullwidth) the regex may grab
+    .map(u => u.replace(/[.,;:!?。，、；：！？]+$/u, ''))
+    .filter(Boolean);
+  return [...new Set(cleaned)].slice(0, 5);   // de-dup, cap to a sane number
+}
+
+/**
  * Archive downloaded media (currently in MEDIA_DIR) into the KB raw store,
  * grouped by date: kb/raw/YYYY-MM-DD/<filename>. Returns the new paths.
  * Copies (not moves) so the original media flow is untouched.
@@ -51,7 +98,9 @@ export function archiveRawFiles(localPaths: string[], date = new Date()): string
   const archived: string[] = [];
   for (const src of localPaths) {
     try {
-      const dest = path.join(destDir, path.basename(src));
+      // Prefix with a short uuid so two records with same-named files (e.g.
+      // both "image.jpg" from different URLs) never overwrite each other.
+      const dest = path.join(destDir, `${randomUUID().slice(0, 8)}-${path.basename(src)}`);
       fs.copyFileSync(src, dest);
       archived.push(dest);
     } catch (err: any) {
@@ -83,6 +132,7 @@ export function parseKbRecord(text: string): ParsedKbRecord | null {
       tags:         toStringArray(obj.tags),
       entities:     toStringArray(obj.entities),
       content_type: normalizeType(obj.content_type),
+      saved_files:  safeSavedFiles(obj.saved_files),
     };
   } catch {
     return null;
@@ -103,14 +153,17 @@ export function stripKbRecord(text: string): string {
 }
 
 /** Fallback record built from raw text when no/invalid kb-record block. */
-export function fallbackRecord(rawText: string, hasMedia: boolean): ParsedKbRecord {
+export function fallbackRecord(rawText: string, hasMedia: boolean, hasUrl = false): ParsedKbRecord {
   const firstLine = (rawText.split('\n').find(l => l.trim()) ?? '').trim();
+  const contentType = hasUrl ? 'url' : hasMedia ? 'mixed' : 'text';
+  const titleFallback = hasUrl ? '(链接记录)' : hasMedia ? '(媒体记录)' : '(无标题记录)';
   return {
-    title:        firstLine.slice(0, 30) || (hasMedia ? '(媒体记录)' : '(无标题记录)'),
+    title:        firstLine.slice(0, 30) || titleFallback,
     summary:      rawText.slice(0, 200),
     tags:         [],
     entities:     [],
-    content_type: hasMedia ? 'mixed' : 'text',
+    content_type: contentType,
+    saved_files:  [],
   };
 }
 
@@ -121,5 +174,43 @@ function toStringArray(v: unknown): string[] {
 
 function normalizeType(v: unknown): string {
   const t = String(v ?? '').toLowerCase();
-  return ['text', 'image', 'file', 'mixed'].includes(t) ? t : 'text';
+  return ['text', 'image', 'file', 'mixed', 'url'].includes(t) ? t : 'text';
+}
+
+/**
+ * Validate Claude-reported downloaded file paths before the bot copies them.
+ * Only absolute paths whose REAL path (symlinks fully resolved) lives under an
+ * allowed root — MEDIA_DIR, KB_DIR, or the OS temp dir — are accepted. This
+ * stops a confused/prompt-injected model from making the bot archive arbitrary
+ * files (e.g. ~/.ssh/id_rsa) via path traversal OR via a symlink planted under
+ * MEDIA_DIR that points outside it. Roots are realpath'd too because on macOS
+ * os.tmpdir() (/var/...) and the home dir can themselves sit behind symlinks.
+ */
+function safeSavedFiles(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const roots = [CONFIG.MEDIA_DIR, CONFIG.KB_DIR, os.tmpdir()]
+    .map(realpathOrResolve)
+    .map(r => r + path.sep);
+  const out: string[] = [];
+  for (const item of v.slice(0, 20)) {
+    const p = String(item).trim();
+    if (!p || !path.isAbsolute(p)) continue;
+    let real: string;
+    try {
+      real = fs.realpathSync.native(p);   // resolves symlinks; throws if missing
+    } catch {
+      console.error(`[kb] 拒绝归档无法解析的文件: ${p}`);
+      continue;
+    }
+    if (roots.some(root => (real + path.sep).startsWith(root))) {
+      out.push(real);
+    } else {
+      console.error(`[kb] 拒绝归档越界文件: ${p} → ${real}`);
+    }
+  }
+  return out;
+}
+
+function realpathOrResolve(p: string): string {
+  try { return fs.realpathSync.native(p); } catch { return path.resolve(p); }
 }

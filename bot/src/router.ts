@@ -8,7 +8,8 @@ import { CONFIG } from './config';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 import { KbStore } from './kb/store';
 import {
-  KB_INSTRUCTION, archiveRawFiles, parseKbRecord, stripKbRecord, fallbackRecord,
+  KB_INSTRUCTION, buildUrlInstruction, extractUrls,
+  archiveRawFiles, parseKbRecord, stripKbRecord, fallbackRecord,
 } from './kb/ingest';
 
 const HELP = `🦞 Claude Code 微信机器人
@@ -35,7 +36,7 @@ const HELP = `🦞 Claude Code 微信机器人
 /kb               最近的知识库记录
 /kb search <关键词>  全文搜索
 /kb <编号>        查看某条记录详情
-（发图片/文件+文字会自动入库）
+（发图片/文件 或 小红书/公众号/网页链接 会自动抓取入库）
 
 /help         显示此帮助`;
 
@@ -59,6 +60,7 @@ interface PendingTurn {
 interface KbContext {
   rawText:  string;     // concatenated text the user sent
   rawPaths: string[];   // downloaded media paths to archive
+  urls:     string[];   // URLs in the text → fetch via agent-reach
   hasMedia: boolean;
 }
 
@@ -196,8 +198,10 @@ export class Router {
   }
 
   /**
-   * A turn is ingest-worthy when it carries media (image/file/video). Text-only
-   * turns stay as normal chat so the KB isn't polluted with conversation.
+   * A turn is ingest-worthy when it carries media (image/file/video) OR its
+   * text contains a URL (XiaoHongShu / 公众号 / web article → fetched via
+   * agent-reach). Plain text with no URL stays as normal chat so the KB isn't
+   * polluted with conversation.
    */
   private buildKbContext(items: TurnItem[]): KbContext | null {
     const rawPaths = items
@@ -206,7 +210,6 @@ export class Router {
          i.type === MessageItemType.FILE  ||
          i.type === MessageItemType.VIDEO))
       .map(i => i.localPath!);
-    if (!rawPaths.length) return null;
 
     const rawText = items
       .filter(i => i.type === MessageItemType.TEXT || i.type === MessageItemType.VOICE)
@@ -214,7 +217,12 @@ export class Router {
       .filter(Boolean)
       .join('\n');
 
-    return { rawText, rawPaths, hasMedia: true };
+    const urls = extractUrls(rawText);
+
+    // No media and no URL → ordinary chat, not an ingest.
+    if (!rawPaths.length && !urls.length) return null;
+
+    return { rawText, rawPaths, urls, hasMedia: rawPaths.length > 0 };
   }
 
   /** Download IMAGE and FILE items, store localPath on the item in-place. */
@@ -546,7 +554,7 @@ export class Router {
     const recent = this.kb.recent(userId);
     const total  = this.kb.count(userId);
     if (!recent.length) {
-      await this.reply(userId, '📚 知识库还是空的\n发图片/文件+文字会自动入库'); return;
+      await this.reply(userId, '📚 知识库还是空的\n发图片/文件 或 链接 会自动入库'); return;
     }
     const lines = recent.map(r =>
       `#${r.id} ${r.title}\n   ${formatAgo(Date.now() - r.created_at)}前`
@@ -583,12 +591,17 @@ export class Router {
       Promise.resolve(this.sender.sendTyping(userId, this.contextTokens.get(userId)!))
         .catch(() => {});
 
+      const ingestNote = kbCtx ? (kbCtx.urls.length ? '（抓取链接并入库）' : '（自动入库）') : '';
       const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
       await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
-        (kbCtx ? '（自动入库）' : '') + `\n📝 ${preview}`);
+        ingestNote + `\n📝 ${preview}`);
 
       // Piggyback KB extraction on this single claude run — no extra LLM call.
-      const claudePrompt = kbCtx ? prompt + KB_INSTRUCTION : prompt;
+      // URL turns get the agent-reach fetch instruction; media turns the basic one.
+      const kbInstruction = !kbCtx ? ''
+        : kbCtx.urls.length ? buildUrlInstruction(kbCtx.urls, kbCtx.rawPaths)
+        : KB_INSTRUCTION;
+      const claudePrompt = prompt + kbInstruction;
 
       const existingUuid = this.activeSession.get(userId)
                            ?? this.store.getLatest(userId, wsName)?.session_uuid
@@ -643,10 +656,14 @@ export class Router {
       let kbLine = '';
       let displaySource = resultText.trim() ? resultText : textParts.join('');
       if (kbCtx) {
-        const parsed  = parseKbRecord(displaySource) ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia);
+        const parsed  = parseKbRecord(displaySource)
+                        ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia, kbCtx.urls.length > 0);
         displaySource = stripKbRecord(displaySource);
         try {
-          const archived = archiveRawFiles(kbCtx.rawPaths);
+          // Archive both WeChat-uploaded media AND files Claude downloaded
+          // from URLs (already path-validated in parseKbRecord). De-dup.
+          const toArchive = [...new Set([...kbCtx.rawPaths, ...parsed.saved_files])];
+          const archived = archiveRawFiles(toArchive);
           const rec = this.kb.insert({
             user_openid:    userId,
             workspace:      wsName,
@@ -659,8 +676,9 @@ export class Router {
             raw_files:      archived,
             source_session: newSessionId ?? '',
           });
-          const tagStr = rec.tags.length ? '  #' + rec.tags.join(' #') : '';
-          kbLine = `\n\n📚 已入库 #${rec.id}：${rec.title}${tagStr}`;
+          const tagStr  = rec.tags.length ? '  #' + rec.tags.join(' #') : '';
+          const fileStr = archived.length ? `  📎${archived.length}` : '';
+          kbLine = `\n\n📚 已入库 #${rec.id}：${rec.title}${tagStr}${fileStr}`;
         } catch (err: any) {
           console.error('[kb] 入库失败:', err.message);
           kbLine = '\n\n⚠️ 知识库入库失败（任务本身已完成）';
