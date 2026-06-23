@@ -6,6 +6,10 @@ import { runClaude, RunEvent } from './claude/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
+import { KbStore } from './kb/store';
+import {
+  KB_INSTRUCTION, archiveRawFiles, parseKbRecord, stripKbRecord, fallbackRecord,
+} from './kb/ingest';
 
 const HELP = `🦞 Claude Code 微信机器人
 
@@ -27,6 +31,12 @@ const HELP = `🦞 Claude Code 微信机器人
 /ws rm <名称>         删除工作区
 /ws default <名称>    设为默认工作区
 
+─ 知识库命令 ─
+/kb               最近的知识库记录
+/kb search <关键词>  全文搜索
+/kb <编号>        查看某条记录详情
+（发图片/文件+文字会自动入库）
+
 /help         显示此帮助`;
 
 // ── Turn buffer types ─────────────────────────────────────────────────────────
@@ -45,6 +55,13 @@ interface PendingTurn {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Context for auto-ingesting a turn into the knowledge base. */
+interface KbContext {
+  rawText:  string;     // concatenated text the user sent
+  rawPaths: string[];   // downloaded media paths to archive
+  hasMedia: boolean;
+}
+
 export class Router {
   private activeSession = new Map<string, string>();
   private contextTokens = new Map<string, string>();
@@ -53,6 +70,7 @@ export class Router {
   private turns         = new Map<string, PendingTurn>();
   private queued        = new Map<string, TurnItem[]>();   // turns waiting while task runs
   private lastFailed    = new Map<string, string>();       // prompt of last failed task, for /retry
+  private kb            = new KbStore();                    // knowledge-base records (Phase 1)
 
   constructor(
     private sender: Sender,
@@ -164,7 +182,7 @@ export class Router {
     await this.downloadTurnMedia(userId, turn.items);
 
     const prompt = this.buildTurnPrompt(turn.items);
-    await this.runTask(userId, prompt);
+    await this.runTask(userId, prompt, this.buildKbContext(turn.items));
   }
 
   private async runQueued(userId: string) {
@@ -174,7 +192,29 @@ export class Router {
     await this.reply(userId, `🔄 继续处理队列消息 (${this.describeTurnItems(items)})...`);
     await this.downloadTurnMedia(userId, items);
     const prompt = this.buildTurnPrompt(items);
-    await this.runTask(userId, prompt);
+    await this.runTask(userId, prompt, this.buildKbContext(items));
+  }
+
+  /**
+   * A turn is ingest-worthy when it carries media (image/file/video). Text-only
+   * turns stay as normal chat so the KB isn't polluted with conversation.
+   */
+  private buildKbContext(items: TurnItem[]): KbContext | null {
+    const rawPaths = items
+      .filter(i => i.localPath &&
+        (i.type === MessageItemType.IMAGE ||
+         i.type === MessageItemType.FILE  ||
+         i.type === MessageItemType.VIDEO))
+      .map(i => i.localPath!);
+    if (!rawPaths.length) return null;
+
+    const rawText = items
+      .filter(i => i.type === MessageItemType.TEXT || i.type === MessageItemType.VOICE)
+      .map(i => i.text ?? '')
+      .filter(Boolean)
+      .join('\n');
+
+    return { rawText, rawPaths, hasMedia: true };
   }
 
   /** Download IMAGE and FILE items, store localPath on the item in-place. */
@@ -291,6 +331,11 @@ export class Router {
 
       case '/ws': {
         await this.handleWs(userId, parts.slice(1));
+        break;
+      }
+
+      case '/kb': {
+        await this.handleKb(userId, parts.slice(1));
         break;
       }
 
@@ -453,9 +498,67 @@ export class Router {
     }
   }
 
+  // ── /kb subcommands ───────────────────────────────────────────────────────
+
+  private async handleKb(userId: string, args: string[]) {
+    // /kb search <query>
+    if (args[0]?.toLowerCase() === 'search') {
+      const query = args.slice(1).join(' ').trim();
+      if (!query) { await this.reply(userId, '用法: /kb search <关键词>'); return; }
+      let hits;
+      try {
+        hits = this.kb.search(userId, query);
+      } catch (err: any) {
+        // Defense in depth: toMatchQuery sanitizes input, but never let a
+        // malformed FTS5 query crash command handling.
+        console.error('[kb] search error:', err.message);
+        await this.reply(userId, '🔍 搜索词无法解析，换个关键词试试'); return;
+      }
+      if (!hits.length) {
+        await this.reply(userId, `🔍 没有匹配 "${query}" 的记录`); return;
+      }
+      const lines = hits.map(r =>
+        `#${r.id} ${r.title}\n   ${r.summary.slice(0, 50)}${r.summary.length > 50 ? '…' : ''}`
+      );
+      await this.reply(userId, `🔍 "${query}" 找到 ${hits.length} 条：\n\n` + lines.join('\n\n'));
+      return;
+    }
+
+    // /kb <id> → detail
+    const id = parseInt(args[0] ?? '', 10);
+    if (!isNaN(id)) {
+      const r = this.kb.get(id);
+      if (!r || r.user_openid !== userId) {
+        await this.reply(userId, `❌ 找不到记录 #${id}`); return;
+      }
+      const tagStr = r.tags.length ? '\n🏷  ' + r.tags.map(t => '#' + t).join(' ') : '';
+      const entStr = r.entities.length ? '\n👤 ' + r.entities.join('、') : '';
+      const fileStr = r.raw_files.length ? `\n📎 ${r.raw_files.length} 个原始文件` : '';
+      await this.reply(userId,
+        `📄 #${r.id} ${r.title}\n` +
+        `${formatAgo(Date.now() - r.created_at)}前 · ${r.content_type}\n\n` +
+        `${r.summary}${tagStr}${entStr}${fileStr}`
+      );
+      return;
+    }
+
+    // /kb → recent
+    const recent = this.kb.recent(userId);
+    const total  = this.kb.count(userId);
+    if (!recent.length) {
+      await this.reply(userId, '📚 知识库还是空的\n发图片/文件+文字会自动入库'); return;
+    }
+    const lines = recent.map(r =>
+      `#${r.id} ${r.title}\n   ${formatAgo(Date.now() - r.created_at)}前`
+    );
+    await this.reply(userId,
+      `📚 知识库（共 ${total} 条，最近 ${recent.length} 条）：\n\n` + lines.join('\n\n') +
+      `\n\n发 /kb <编号> 看详情，/kb search <词> 搜索`);
+  }
+
   // ── Task runner ───────────────────────────────────────────────────────────
 
-  private async runTask(userId: string, prompt: string) {
+  private async runTask(userId: string, prompt: string, kbCtx: KbContext | null = null) {
     if (this.running.has(userId)) {
       await this.reply(userId, '⏳ 上一个任务还在运行（/status 查看）');
       return;
@@ -464,25 +567,36 @@ export class Router {
     const aborter = new AbortController();
     this.aborts.set(userId, aborter);
 
-    const wsName = this.wsm.currentName(userId);
-    const wsDef  = this.wsm.current(userId);
-    this.sender.sendTyping(userId, this.contextTokens.get(userId)!);
-
-    const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
-    await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}\n📝 ${preview}`);
-
-    const existingUuid = this.activeSession.get(userId)
-                         ?? this.store.getLatest(userId, wsName)?.session_uuid
-                         ?? null;
-
     const textParts: string[]    = [];
     const toolNames: Set<string> = new Set();
     let resultText   = '';
-    let newSessionId = existingUuid;
+    let newSessionId: string | null = null;
 
+    // Everything that can throw lives inside try/finally so a failure during
+    // setup (workspace lookup / reply) can never strand `running` and deadlock
+    // the user. The only statements above are AbortController + Map.set, which
+    // cannot throw.
     try {
+      const wsName = this.wsm.currentName(userId);
+      const wsDef  = this.wsm.current(userId);
+      // best-effort typing indicator — never let it surface as an unhandled rejection
+      Promise.resolve(this.sender.sendTyping(userId, this.contextTokens.get(userId)!))
+        .catch(() => {});
+
+      const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
+      await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
+        (kbCtx ? '（自动入库）' : '') + `\n📝 ${preview}`);
+
+      // Piggyback KB extraction on this single claude run — no extra LLM call.
+      const claudePrompt = kbCtx ? prompt + KB_INSTRUCTION : prompt;
+
+      const existingUuid = this.activeSession.get(userId)
+                           ?? this.store.getLatest(userId, wsName)?.session_uuid
+                           ?? null;
+      newSessionId = existingUuid;
+
       const finalSid = await runClaude(
-        prompt,
+        claudePrompt,
         {
           sessionId: existingUuid,
           cwd:       wsDef.path,
@@ -524,19 +638,45 @@ export class Router {
         ? '🔧 ' + [...toolNames].join(' · ') + '\n\n'
         : '';
 
-      let body: string;
-      if (resultText.trim()) {
-        body = resultText.length > 600
-          ? resultText.slice(0, 600) + `\n…(共${resultText.length}字)`
-          : resultText;
-      } else {
-        const full = textParts.join('').trim();
-        body = full.length > 400
-          ? full.slice(0, 400) + `\n…(共${full.length}字，详情在工作区)`
-          : full || '（任务完成）';
+      // KB ingest: extract the kb-record block, archive files, write a record.
+      // Parse and strip from the SAME text so a parsed block can never leak.
+      let kbLine = '';
+      let displaySource = resultText.trim() ? resultText : textParts.join('');
+      if (kbCtx) {
+        const parsed  = parseKbRecord(displaySource) ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia);
+        displaySource = stripKbRecord(displaySource);
+        try {
+          const archived = archiveRawFiles(kbCtx.rawPaths);
+          const rec = this.kb.insert({
+            user_openid:    userId,
+            workspace:      wsName,
+            title:          parsed.title,
+            summary:        parsed.summary,
+            content_type:   parsed.content_type,
+            tags:           parsed.tags,
+            entities:       parsed.entities,
+            raw_text:       kbCtx.rawText,
+            raw_files:      archived,
+            source_session: newSessionId ?? '',
+          });
+          const tagStr = rec.tags.length ? '  #' + rec.tags.join(' #') : '';
+          kbLine = `\n\n📚 已入库 #${rec.id}：${rec.title}${tagStr}`;
+        } catch (err: any) {
+          console.error('[kb] 入库失败:', err.message);
+          kbLine = '\n\n⚠️ 知识库入库失败（任务本身已完成）';
+        }
       }
 
-      await this.reply(userId, toolLine + body);
+      let body: string;
+      if (displaySource.trim()) {
+        body = displaySource.length > 600
+          ? displaySource.slice(0, 600) + `\n…(共${displaySource.length}字)`
+          : displaySource;
+      } else {
+        body = '（任务完成）';
+      }
+
+      await this.reply(userId, toolLine + body + kbLine);
     } catch (err: any) {
       console.error('[router] error:', err.message);
       this.lastFailed.set(userId, prompt);
@@ -544,9 +684,14 @@ export class Router {
     } finally {
       this.running.delete(userId);
       this.aborts.delete(userId);
-      // Fire queued turn if any (setImmediate so finally completes first)
+      // Fire queued turn if any (setImmediate so finally completes first).
+      // Guard the async call so a throw inside runQueued can't become an
+      // unhandled rejection that crashes the daemon.
       if (this.queued.has(userId)) {
-        setImmediate(() => this.runQueued(userId));
+        setImmediate(() => {
+          this.runQueued(userId).catch(err =>
+            console.error('[router] runQueued error:', err?.message ?? err));
+        });
       }
     }
   }
