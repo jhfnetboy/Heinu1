@@ -18,4 +18,10 @@ export VOLTA_HOME="$HOME/.volta"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Proxy for Anthropic API access (claude CLI needs it; iLink does NOT use these — iLink bypasses
+# system proxy by calling fetch() directly without proxy env vars in its own requests)
+export HTTP_PROXY="http://127.0.0.1:7890"
+export HTTPS_PROXY="http://127.0.0.1:7890"
+export ALL_PROXY="socks5://127.0.0.1:7890"
+
 exec node "$SCRIPT_DIR/node_modules/.bin/tsx" "$SCRIPT_DIR/src/main.ts" "$@"

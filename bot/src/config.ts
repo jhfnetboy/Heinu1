@@ -16,6 +16,7 @@ export const CONFIG = {
   TURN_TIMEOUT_MS:    30_000,   // 30s silence = turn complete, start executing
 
   CLAUDE_BIN:             process.env.CLAUDE_BIN || 'claude',
+  CLAUDE_MODEL:           process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
   CLAUDE_PERMISSION_MODE: process.env.CLAUDE_PERMISSION_MODE || 'bypassPermissions',
 
   MAX_MSG_LEN: 1800,
