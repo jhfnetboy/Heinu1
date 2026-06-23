@@ -1,7 +1,11 @@
 // Phase-1 KB smoke test. Run with a temp HOME so it never touches real data:
 //   HOME=/tmp/kb-smoke npx tsx src/kb/smoke.ts
 import { KbStore } from './store';
-import { parseKbRecord, stripKbRecord, fallbackRecord, archiveRawFiles } from './ingest';
+import {
+  parseKbRecord, stripKbRecord, fallbackRecord, archiveRawFiles,
+  extractUrls, buildUrlInstruction,
+} from './ingest';
+import { CONFIG } from '../config';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -49,6 +53,25 @@ assert(stripKbRecord(unclosed).includes('这是结果'), 'text before unclosed f
 const fb = fallbackRecord('第一行内容\n第二行', true);
 assert(fb.title === '第一行内容', 'fallback title = first line');
 assert(fb.content_type === 'mixed', 'fallback type mixed when media');
+assert(Array.isArray(fb.saved_files) && fb.saved_files.length === 0, 'fallback saved_files empty');
+
+// ── extractUrls ──
+assert(extractUrls('看这个 https://xhslink.com/abc 不错').length === 1, 'extract one url');
+assert(extractUrls('https://a.com https://a.com').length === 1, 'extract dedupes');
+assert(extractUrls('纯文字没有链接').length === 0, 'no url → empty');
+assert(extractUrls('链接：https://mp.weixin.qq.com/s/xyz。后面').includes('https://mp.weixin.qq.com/s/xyz'),
+  'url stops at CJK punctuation');
+assert(buildUrlInstruction(['https://a.com']).includes('agent-reach'), 'url instruction mentions agent-reach');
+
+// ── saved_files path safety (parseKbRecord) ──
+const okPath = path.join(CONFIG.MEDIA_DIR, 'pic.jpg');
+const goodBlock = '```kb-record\n' + JSON.stringify({
+  title: 't', summary: 's', tags: [], entities: [], content_type: 'url',
+  saved_files: [okPath, '/etc/passwd', '../../secret', 'relative.jpg'],
+}) + '\n```';
+const sf = parseKbRecord(goodBlock)!.saved_files;
+assert(sf.length === 1 && sf[0] === okPath, 'only in-MEDIA_DIR saved_file accepted, traversal rejected');
+assert(parseKbRecord(goodBlock)!.content_type === 'url', 'url content_type accepted');
 
 // ── archiveRawFiles ──
 const tmpSrc = path.join(os.tmpdir(), 'kb-smoke-src.txt');
