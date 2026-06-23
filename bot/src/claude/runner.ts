@@ -41,6 +41,7 @@ export function runClaude(
       '--output-format', 'stream-json',
       '--verbose',
       '--permission-mode', CONFIG.CLAUDE_PERMISSION_MODE,
+      '--model', CONFIG.CLAUDE_MODEL,
     ];
 
     if (opts.sessionId) args.push('--resume', opts.sessionId);
@@ -56,20 +57,32 @@ export function runClaude(
     let finalSessionId = opts.sessionId ?? '';
     let aborted = false;
     let buf = '';
+    let sessionNotFound = false;
+    let rawStdout = '';
+    let lastErrorText = '';
 
     // Mark aborts so the 'error'/'close' handlers resolve quietly instead of
     // surfacing the kill as a task failure.
     opts.signal?.addEventListener('abort', () => { aborted = true; }, { once: true });
 
     proc.stdout.on('data', (chunk: Buffer) => {
-      buf += chunk.toString();
+      const raw = chunk.toString();
+      rawStdout += raw;
+      buf += raw;
       const lines = buf.split('\n');
       buf = lines.pop() ?? '';
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const sid = dispatchEvent(JSON.parse(trimmed), onEvent);
+          const ev = JSON.parse(trimmed);
+          if (ev.type === 'result' && ev.is_error) {
+            if (Array.isArray(ev.errors) && ev.errors.some((e: string) => e.includes('No conversation found with session ID'))) {
+              sessionNotFound = true;
+            }
+            if (ev.result && !lastErrorText) lastErrorText = ev.result as string;
+          }
+          const sid = dispatchEvent(ev, onEvent);
           if (sid) finalSessionId = sid;
         } catch { /* non-JSON debug line */ }
       }
@@ -77,13 +90,28 @@ export function runClaude(
 
     proc.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString().trim();
-      if (text) console.error('[claude]', text);
+      if (text) {
+        console.error('[claude]', text);
+        if (text.includes('No conversation found with session ID')) sessionNotFound = true;
+      }
     });
 
     proc.on('close', (code) => {
-      if (aborted) resolve(finalSessionId);
-      else if (code !== 0 && code !== null) reject(new Error(`claude 退出码 ${code}`));
-      else resolve(finalSessionId);
+      if (aborted) {
+        resolve(finalSessionId);
+      } else if (code !== 0 && code !== null) {
+        // Stale session: auto-retry without --resume so the user's message is not lost
+        if (opts.sessionId && sessionNotFound) {
+          console.error(`[claude] session ${opts.sessionId} not found, retrying without --resume`);
+          resolve(runClaude(prompt, { ...opts, sessionId: null }, onEvent));
+        } else {
+          const detail = lastErrorText || rawStdout.slice(0, 200);
+          console.error(`[claude] exit ${code}:`, detail);
+          reject(new Error(lastErrorText ? `claude: ${lastErrorText}` : `claude 退出码 ${code}`));
+        }
+      } else {
+        resolve(finalSessionId);
+      }
     });
 
     proc.on('error', (err: any) => {
