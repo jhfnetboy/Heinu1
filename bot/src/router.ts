@@ -599,7 +599,7 @@ export class Router {
       // Piggyback KB extraction on this single claude run — no extra LLM call.
       // URL turns get the agent-reach fetch instruction; media turns the basic one.
       const kbInstruction = !kbCtx ? ''
-        : kbCtx.urls.length ? buildUrlInstruction(kbCtx.urls)
+        : kbCtx.urls.length ? buildUrlInstruction(kbCtx.urls, kbCtx.rawPaths)
         : KB_INSTRUCTION;
       const claudePrompt = prompt + kbInstruction;
 
@@ -656,7 +656,8 @@ export class Router {
       let kbLine = '';
       let displaySource = resultText.trim() ? resultText : textParts.join('');
       if (kbCtx) {
-        const parsed  = parseKbRecord(displaySource) ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia);
+        const parsed  = parseKbRecord(displaySource)
+                        ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia, kbCtx.urls.length > 0);
         displaySource = stripKbRecord(displaySource);
         try {
           // Archive both WeChat-uploaded media AND files Claude downloaded
