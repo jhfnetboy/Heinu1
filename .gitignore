@@ -141,3 +141,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Generated image source files
+assets/generated-florals/_keyed/
+assets/generated-florals-added/_keyed/
