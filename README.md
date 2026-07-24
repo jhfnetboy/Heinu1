@@ -27,6 +27,7 @@
 | 帮我把 vlog 脚本和公众号文章合并，发布到博客 | 读文件 → 合并 → 写博客 → git push → 回复"发布成功" |
 | 研究一下 MiMo Code 发布，写一篇分析 | 联网搜索 → 整合资料 → 写文章 → 保存到工作区 |
 | 现在在做什么进展怎样 | 汇报当前任务状态 |
+| [转发一个小红书/公众号链接] | 抓正文 → 总结 → 自动存进全局知识库，`/kb search` 随时能翻出来 |
 | /ws main | 切换到主项目目录开始工作 |
 
 > **关键特性**：Bot 收到消息立刻回复"收到，开始执行"，你知道它在干活不是死机了。
@@ -181,7 +182,38 @@ npm start
 | `/sessions` | 查看本工作区会话历史 |
 | `/resume <n>` | 恢复第 n 个会话 |
 | `/status` | 查看当前状态 |
+| `/kb` | 最近入库的知识库记录 |
+| `/kb <编号>` | 查看某条记录详情 |
+| `/kb search <关键词>` | 搜索知识库 |
+| `/retry` | 重试上次失败的任务 |
+| `/stop` | 中止当前任务 |
 | `/help` | 帮助 |
+
+---
+
+## 知识库（全局 MemPalace）
+
+发给 Bot 的**图片、文件、视频，或者带链接的消息**，处理完会自动整理成一条知识库记录 —— 不用额外说"帮我存起来"。纯聊天文字不入库，避免闲聊污染知识库。
+
+```
+你：[转发一篇公众号文章链接]
+Bot：（抓取正文 → 总结 → 回复）
+     📥 已入库 #7 《...》
+```
+
+链接会先用 `libs/agent-reach` 抓正文（小红书 / 公众号 / 普通网页），再连同总结一起入库。
+
+**存在哪：** 全局 MemPalace —— `~/.mempalace/palace`（wing 为 `heinu1`），和这台机器上所有 Claude Code 会话共用同一个知识库，不是 Bot 私有的小 SQLite。原始图片文件仍按日期归档在 `~/.heinu1-bot/kb/raw/`。
+
+**依赖：** 需要本机装好 MemPalace，默认走 `~/.mempalace/venv/bin/python`。venv 在别处就设环境变量：
+
+```bash
+export MEMPALACE_PYTHON=/path/to/venv/bin/python
+```
+
+没装 MemPalace 也不影响聊天和跑任务，只是入库会失败。
+
+> `/kb` 列表里的编号是进程内临时分配的，Bot 重启后会变 —— 想看详情先发 `/kb` 拿最新编号。
 
 ---
 
@@ -273,9 +305,14 @@ Heinu1/
 │   │   │   ├── monitor.ts   ← 长轮询消息接收
 │   │   │   ├── sender.ts    ← 发送消息（含分片 1800 字）
 │   │   │   └── types.ts     ← iLink 协议类型
-│   │   └── claude/
-│   │       ├── runner.ts    ← spawn claude CLI，解析 stream-json
-│   │       └── store.ts     ← SQLite 会话管理
+│   │   ├── claude/
+│   │   │   ├── runner.ts    ← spawn claude CLI，解析 stream-json
+│   │   │   └── store.ts     ← SQLite 会话管理
+│   │   └── kb/
+│   │       ├── ingest.ts          ← 入库指令拼装 + kb-record 解析 + 原始文件归档
+│   │       └── mempalace-store.ts ← 知识库读写（转发给 mp_bridge.py）
+│   ├── scripts/
+│   │   └── mp_bridge.py     ← 全局 MemPalace 的 JSON 桥（Python）
 │   ├── launchd/             ← macOS 开机自启配置
 │   ├── start.sh             ← launchd 启动包装（处理 PATH/nvm）
 │   └── setup.sh             ← 一键安装脚本
@@ -382,8 +419,14 @@ Body: {
 ~/.heinu1-bot/
 ├── token.json          ← iLink bot_token + baseurl（mode 600）
 ├── workspaces.json     ← 工作区配置
-└── sessions.db         ← SQLite，会话记录（user × workspace 维度）
+├── sessions.db         ← SQLite，会话记录（user × workspace 维度）
+├── media/              ← 微信 CDN 下载并解密后的图片/文件/视频
+└── kb/raw/             ← 入库记录的原始文件，按日期归档
+
+~/.mempalace/palace     ← 知识库记录本体（全局 MemPalace，跨项目共享）
 ```
 
 会话表结构：`(user_openid, workspace, session_uuid, title, created_at, last_used)`。切换工作区时 bot 自动加载该工作区最近一次的 `session_uuid` 用于 `--resume`。
+
+知识库记录不落在 `~/.heinu1-bot/` 里，而是通过 `bot/scripts/mp_bridge.py` 写进全局 MemPalace，Bot 侧只留原始文件。
 
