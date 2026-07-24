@@ -45,6 +45,7 @@ interface BridgeRecord {
   raw_text:       string;
   created_at:     number;
   filed_at:       string;
+  similarity?:    number;   // search hits only
 }
 
 export class MempalaceStore {
@@ -124,49 +125,27 @@ export class MempalaceStore {
     return rec;
   }
 
-  search(userOpenid: string, query: string, limit = 10): KbRecord[] {
-    const { results } = bridge<{ results: Array<{ text: string; room: string; similarity: number }> }>(
-      'search', { query, limit },
-    );
-    // search results carry text but not structured fields — synthesise minimal records
-    return results.map((hit, idx) => {
-      const id = this.nextId++;
-      return {
-        id,
-        user_openid:    userOpenid,
-        workspace:      'default',
-        title:          firstLine(hit.text),
-        summary:        firstLine(hit.text, 120),
-        content_type:   hit.room,
-        tags:           [],
-        entities:       [],
-        raw_text:       hit.text,
-        raw_files:      [],
-        source_session: '',
-        created_at:     Date.now(),
-      } satisfies KbRecord;
-    });
+  search(_userOpenid: string, query: string, limit = 10): KbRecord[] {
+    const { results } = bridge<{ results: BridgeRecord[] }>('search', { query, limit });
+    return results.map(br => this.hydrate(br));
   }
 
-  recent(userOpenid: string, limit = 10): KbRecord[] {
+  recent(_userOpenid: string, limit = 10): KbRecord[] {
     const { results } = bridge<{ results: BridgeRecord[] }>('recent', { limit });
-    return results.map(br => {
-      const id = this.localId(br.drawer_id);
-      const rec = this.toKbRecord(br, id);
-      this.recordMap.set(id, rec);
-      return rec;
-    });
+    return results.map(br => this.hydrate(br));
+  }
+
+  /** Convert a bridge record to a KbRecord, registering its local id so
+   *  a later `/kb <id>` on this listing resolves. */
+  private hydrate(br: BridgeRecord): KbRecord {
+    const id  = this.localId(br.drawer_id);
+    const rec = this.toKbRecord(br, id);
+    this.recordMap.set(id, rec);
+    return rec;
   }
 
   count(_userOpenid: string): number {
     const { count } = bridge<{ count: number }>('count');
     return count;
   }
-}
-
-/** Extract the first non-empty line from text, optionally truncated. */
-function firstLine(text: string, maxLen = 60): string {
-  const line = text.split('\n').find(l => l.trim().replace(/^#\s*/, '').trim()) ?? '';
-  const clean = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').trim();
-  return clean.length <= maxLen ? clean : clean.slice(0, maxLen - 1) + '…';
 }

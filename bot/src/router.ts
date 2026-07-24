@@ -517,10 +517,10 @@ export class Router {
       try {
         hits = this.kb.search(userId, query);
       } catch (err: any) {
-        // Defense in depth: toMatchQuery sanitizes input, but never let a
-        // malformed FTS5 query crash command handling.
+        // Search shells out to mp_bridge.py — a missing MemPalace venv, a
+        // ChromaDB error or a bridge timeout must never crash command handling.
         console.error('[kb] search error:', err.message);
-        await this.reply(userId, '🔍 搜索词无法解析，换个关键词试试'); return;
+        await this.reply(userId, '🔍 搜索暂时不可用（知识库没响应），稍后再试'); return;
       }
       if (!hits.length) {
         await this.reply(userId, `🔍 没有匹配 "${query}" 的记录`); return;

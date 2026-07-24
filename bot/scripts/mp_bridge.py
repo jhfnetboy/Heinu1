@@ -31,7 +31,7 @@ if _mp_src not in sys.path:
     sys.path.insert(0, _mp_src)
 
 from mempalace.config import MempalaceConfig
-from mempalace.mcp_server import tool_add_drawer, tool_search
+from mempalace.mcp_server import tool_add_drawer
 
 import chromadb
 
@@ -159,12 +159,40 @@ def cmd_add(data: dict) -> dict:
 
 
 def cmd_search(data: dict) -> dict:
+    """Semantic search returning full records (same shape as `recent`).
+
+    We query ChromaDB directly instead of using mempalace's search_memories()
+    because that helper drops the drawer ids, and without an id the caller
+    cannot fetch a hit's detail later (`/kb <n>` would 404).
+    """
     query = data.get("query", "")
     limit = int(data.get("limit", 10))
-    result = tool_search(query=query, limit=limit, wing=WING)
-    # tool_search returns {query, filters, results: [{text, wing, room, source_file, similarity}]}
-    hits = result.get("results", [])
-    return {"results": hits}
+    col = _get_collection()
+    if not col:
+        return {"results": []}
+    try:
+        res = col.query(
+            query_texts=[query],
+            n_results=limit,
+            where={"wing": WING},
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as e:
+        return {"results": [], "error": str(e)}
+
+    def first(key: str) -> list:
+        rows = res.get(key) or []
+        return rows[0] if rows else []
+
+    ids, docs, metas, dists = first("ids"), first("documents"), first("metadatas"), first("distances")
+    items = []
+    for i, drawer_id in enumerate(ids):
+        doc = docs[i] if i < len(docs) else ""
+        meta = metas[i] if i < len(metas) else {}
+        rec = _parse_record_content(doc, drawer_id, meta)
+        rec["similarity"] = round(1 - dists[i], 3) if i < len(dists) else 0.0
+        items.append(rec)
+    return {"results": items}
 
 
 def cmd_recent(data: dict) -> dict:
