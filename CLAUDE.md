@@ -71,11 +71,24 @@ replies at `MAX_MSG_LEN` (1800) and best-effort sends a typing indicator first.
   `(user_openid, workspace)`. Includes a runtime migration that `ALTER TABLE`s in the `workspace`
   column on old DBs. `/sessions` and `/resume <n>` index into the per-workspace `last_used` list.
 
+### Knowledge base ingest
+Turns carrying media (image/file/video) or a URL are auto-ingested into the **global MemPalace**
+palace at `~/.mempalace/palace` (wing `heinu1`), shared across every Claude Code session on the
+machine — not a local SQLite KB. `router.ts` appends a KB instruction to the prompt asking Claude
+to emit a fenced ` ```kb-record ` JSON block; `kb/ingest.ts` parses that block after the run,
+archives raw files, and `kb/mempalace-store.ts` writes the record by shelling out to
+`kb/scripts/mp_bridge.py` (a Python bridge into the `mempalace` package). URLs are fetched via the
+`libs/agent-reach` submodule (XiaoHongShu/公众号/web) before ingest. Plain-text-only turns are
+never ingested (prevents chat noise polluting the KB). See `bot/CLAUDE.md` for the module
+breakdown and `docs/kb-system-plan.md` / `docs/agent-reach-integration.md` for design detail.
+
 ### Configuration
-`config.ts` centralizes paths (all under `~/.heinu1-bot/`) and reads two env vars, set in the
-launchd plist: `CLAUDE_PERMISSION_MODE` (default `bypassPermissions`) and `CLAUDE_BIN` (default
-`claude`). `start.sh` exists to give launchd a sane PATH (Homebrew/nvm/Volta) since it runs with a
-minimal environment.
+`config.ts` centralizes paths (all under `~/.heinu1-bot/`) and reads env vars set in the launchd
+plist: `CLAUDE_PERMISSION_MODE` (default `bypassPermissions`), `CLAUDE_BIN` (default `claude`),
+`CLAUDE_MODEL` (default `claude-sonnet-4-6`, bot-only — does not affect interactive `claude` CLI
+usage), and `MEMPALACE_PYTHON` (default `~/.mempalace/venv/bin/python`). `start.sh` exists to give
+launchd a sane PATH (Homebrew/nvm/Volta) since it runs with a minimal environment; proxy exports
+are present but commented out (uncomment if operating from behind a firewall).
 
 ## Gotchas
 - `bot/launchd/com.heinu1.wechat-bot.plist` hardcodes `/Users/jason/Dev/tools/Heinu1/bot`, which is

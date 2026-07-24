@@ -6,7 +6,7 @@ import { runClaude, RunEvent } from './claude/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
-import { KbStore } from './kb/store';
+import { MempalaceStore } from './kb/mempalace-store';
 import {
   KB_INSTRUCTION, buildUrlInstruction, extractUrls,
   archiveRawFiles, parseKbRecord, stripKbRecord, fallbackRecord,
@@ -72,7 +72,7 @@ export class Router {
   private turns         = new Map<string, PendingTurn>();
   private queued        = new Map<string, TurnItem[]>();   // turns waiting while task runs
   private lastFailed    = new Map<string, string>();       // prompt of last failed task, for /retry
-  private kb            = new KbStore();                    // knowledge-base records (Phase 1)
+  private kb            = new MempalaceStore();              // knowledge-base records (global MemPalace)
 
   constructor(
     private sender: Sender,

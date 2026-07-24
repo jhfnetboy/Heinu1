@@ -39,6 +39,23 @@ launchctl list | grep heinu1
 | `claude/runner.ts` | Spawns `claude --print --output-format stream-json --verbose`, parses JSONL events |
 | `claude/store.ts` | SQLite sessions table scoped by `(user_openid, workspace)` |
 | `ilink/cdn.ts` | CDN media download + AES-128-ECB decryption; `saveMedia` writes to `~/.heinu1-bot/media/` |
+| `kb/mempalace-store.ts` | `MempalaceStore` — drop-in KbStore replacement; shells out to `scripts/mp_bridge.py` for all KB ops |
+| `kb/ingest.ts` | Builds the KB instruction appended to ingest-worthy prompts, parses the ` ```kb-record ` block Claude emits, archives raw files |
+| `scripts/mp_bridge.py` | JSON CLI bridge to the global MemPalace at `~/.mempalace/palace`; run via `CONFIG.MEMPALACE_PYTHON` |
+
+## Knowledge Base (Global MemPalace)
+
+Heinu1 no longer maintains a local SQLite KB. All ingested records go into the global MemPalace palace at `~/.mempalace/palace` (ChromaDB, wing `heinu1`), shared with every Claude Code session.
+
+**How it works:**
+1. `MempalaceStore` (`kb/mempalace-store.ts`) provides the same `insert / search / recent / get / count` API as the old `KbStore`
+2. Each call shells out to `scripts/mp_bridge.py` via `execFileSync`, using `CONFIG.MEMPALACE_PYTHON` (`~/.mempalace/venv/bin/python` by default)
+3. The bridge imports the `mempalace` package from the venv and calls `tool_add_drawer` / `tool_search` / ChromaDB queries
+4. Integer IDs shown by `/kb` are sequential in-memory and reset on daemon restart — this is intentional; users run `/kb` to get fresh IDs
+
+**Files no longer used:** `kb/store.ts` (old SQLite class) is kept for the `KbRecord` / `KbDraft` type exports only; `CONFIG.KB_DB_FILE` has been removed.
+
+**Env override:** `MEMPALACE_PYTHON=/path/to/python` to use a different venv.
 
 ## Claude JSONL stream format
 

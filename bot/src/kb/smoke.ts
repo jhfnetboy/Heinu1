@@ -1,6 +1,6 @@
-// Phase-1 KB smoke test. Run with a temp HOME so it never touches real data:
+// KB smoke test — tests ingest.ts utilities (not the store backend).
+// Run with a temp HOME so it never touches real data:
 //   HOME=/tmp/kb-smoke npx tsx src/kb/smoke.ts
-import { KbStore } from './store';
 import {
   parseKbRecord, stripKbRecord, fallbackRecord, archiveRawFiles,
   extractUrls, buildUrlInstruction,
@@ -69,8 +69,6 @@ const goodBlock = '```kb-record\n' + JSON.stringify({
   title: 't', summary: 's', tags: [], entities: [], content_type: 'url',
   saved_files: [okPath, '/etc/passwd', '../../secret', 'relative.jpg'],
 }) + '\n```';
-// the accepted path is realpath'd; on macOS MEDIA_DIR under $HOME has no
-// symlink components, so realpath(okPath) === okPath. Create the file first.
 fs.mkdirSync(CONFIG.MEDIA_DIR, { recursive: true });
 fs.writeFileSync(okPath, 'img');
 const sf = parseKbRecord(goodBlock)!.saved_files;
@@ -78,9 +76,7 @@ assert(sf.length === 1 && sf[0] === fs.realpathSync.native(okPath),
   'only in-MEDIA_DIR saved_file accepted, traversal rejected');
 assert(parseKbRecord(goodBlock)!.content_type === 'url', 'url content_type accepted');
 
-// ── symlink bypass must be rejected (High #1) ──
-// A symlink planted UNDER MEDIA_DIR whose target is outside all allowed roots
-// must not be archived (realpath resolves it to the out-of-root target).
+// ── symlink bypass must be rejected ──
 const outTarget = path.join(os.homedir(), '.kb-smoke-fake-secret');
 fs.writeFileSync(outTarget, 'pretend id_rsa');
 const evilLink = path.join(CONFIG.MEDIA_DIR, 'innocent.jpg');
@@ -102,45 +98,5 @@ assert(archived.length === 1, 'one file archived');
 assert(archived[0].includes('2026-06-23'), 'archived under date dir');
 assert(fs.existsSync(archived[0]), 'archived file exists');
 
-// ── KbStore insert + search + recent ──
-const kb = new KbStore();
-const rec = kb.insert({
-  user_openid: 'user1', workspace: 'home',
-  title: '杭州西湖樱花', summary: '西湖边樱花盛开，适合赏花。',
-  content_type: 'image', tags: ['旅行', '赏花'], entities: ['西湖'],
-  raw_text: '看西湖樱花', raw_files: archived, source_session: 'sess-abc',
-});
-assert(rec.id > 0, 'record inserted with id');
-assert(rec.tags.length === 2, 'tags hydrated back');
-
-const rec2 = kb.insert({
-  user_openid: 'user1', workspace: 'home',
-  title: '北京烤鸭', summary: '全聚德烤鸭味道不错。',
-  content_type: 'text', tags: ['美食'], entities: ['全聚德'],
-  raw_text: '烤鸭好吃', raw_files: [], source_session: 'sess-def',
-});
-
-const hits = kb.search('user1', '西湖');
-assert(hits.length === 1 && hits[0].id === rec.id, 'FTS search finds 西湖 record');
-
-const hits2 = kb.search('user1', '烤鸭');
-assert(hits2.length === 1 && hits2[0].id === rec2.id, 'FTS search finds 烤鸭 record');
-
-const recent = kb.recent('user1');
-assert(recent.length === 2 && recent[0].id === rec2.id, 'recent newest-first');
-assert(kb.count('user1') === 2, 'count = 2');
-
-// isolation by user
-assert(kb.search('user2', '西湖').length === 0, 'search isolated per user');
-
-// ── control chars (NUL) must not throw FTS5 "unterminated string" ──
-let nulOk = true;
-try { kb.search('user1', 'a\u0000b'); } catch { nulOk = false; }
-assert(nulOk, 'NUL char in query does not throw');
-let ctrlOk = true;
-try { kb.search('user1', '\u0001\u0002西湖\u0000烤鸭'); } catch { ctrlOk = false; }
-assert(ctrlOk, 'control chars mixed with CJK do not throw');
-// NUL between two CJK terms still matches (NUL -> space -> two terms)
-assert(kb.search('user1', '\u0000西湖\u0000').length >= 1, 'NUL-wrapped CJK term still matches');
-
-console.log('\n🎉 ALL KB SMOKE TESTS PASSED');
+console.log('\n🎉 ALL KB INGEST SMOKE TESTS PASSED');
+// Note: KbStore (SQLite) tests removed — KB now backed by MempalaceStore (global MemPalace).

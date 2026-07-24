@@ -8,10 +8,14 @@ export const CONFIG = {
   WORKSPACES_FILE: path.join(os.homedir(), '.heinu1-bot', 'workspaces.json'),
   MEDIA_DIR:       path.join(os.homedir(), '.heinu1-bot', 'media'),
 
-  // Knowledge base (KB) — Phase 1: raw archive + SQLite/FTS5 records
+  // Knowledge base — backed by the global MemPalace at ~/.mempalace/palace
+  // Raw media files are still kept locally under .heinu1-bot/kb/raw/
   KB_DIR:     path.join(os.homedir(), '.heinu1-bot', 'kb'),
-  KB_DB_FILE: path.join(os.homedir(), '.heinu1-bot', 'kb', 'kb.db'),
   KB_RAW_DIR: path.join(os.homedir(), '.heinu1-bot', 'kb', 'raw'),
+
+  // Python interpreter inside the MemPalace venv — runs bot/scripts/mp_bridge.py
+  MEMPALACE_PYTHON: process.env.MEMPALACE_PYTHON ||
+    path.join(os.homedir(), '.mempalace', 'venv', 'bin', 'python'),
 
   // Domain only — /ilink/bot/* prefix is in each endpoint path
   ILINK_DEFAULT_BASE: 'https://ilinkai.weixin.qq.com',
