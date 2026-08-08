@@ -22,6 +22,13 @@ export const CONFIG = {
 
   POLL_TIMEOUT_MS:    40_000,   // match reference: 40s
   RECONNECT_DELAY_MS: 3_000,
+
+  // Liveness watchdog: if no getupdates has returned successfully within
+  // WATCHDOG_TIMEOUT_MS, the long-poll is wedged (process alive but not
+  // receiving) — exit(1) so launchd (KeepAlive) restarts with a fresh poll.
+  // Healthy polls return every ~40s, so 180s is ~4.5 cycles of slack.
+  WATCHDOG_TIMEOUT_MS: Number(process.env.WATCHDOG_TIMEOUT_MS) || 180_000,
+  WATCHDOG_CHECK_MS:   Number(process.env.WATCHDOG_CHECK_MS)   || 30_000,
   TURN_TIMEOUT_MS:    30_000,   // 30s silence = turn complete, start executing
 
   CLAUDE_BIN:             process.env.CLAUDE_BIN || 'claude',

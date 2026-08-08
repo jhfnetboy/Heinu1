@@ -14,14 +14,13 @@
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- 崩溃/退出后自动重启，但正常退出（code 0）不重启 -->
+  <!-- 无条件保活：不管为何退出（崩溃 / 干净退出 code 0 / 睡眠时 SIGTERM / 网络中断），
+       launchd 都立即拉起；睡眠→唤醒后若进程已死也会自动重启。
+       彻底停 bot：`launchctl bootout gui/$(id -u)/com.heinu1.wechat-bot`。 -->
   <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
+  <true/>
 
-  <!-- iLink session 过期时进程退出 code 1，launchd 会重启并触发重新登录 -->
+  <!-- ThrottleInterval 10：两次重启至少间隔 10s，防止死循环狂重启 -->
   <key>ThrottleInterval</key>
   <integer>10</integer>
 
