@@ -24,12 +24,35 @@ PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
 
 mkdir -p "$DATA_DIR"
 
-# 进程是不是我们的 bot：PID 存在，且命令行里确实是本目录的 src/main.ts
+# 进程的当前工作目录（用来判断相对路径启动的实例属不属于本目录）
+proc_cwd() {
+  lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+}
+
+# 进程是不是我们的 bot：PID 存在，且跑的确实是本目录的 src/main.ts。
+# 注意有两种启动方式，命令行长得不一样，两种都要认：
+#   launchd / ctl.sh start → 绝对路径  tsx /path/to/bot/src/main.ts
+#   npm start             → 相对路径  tsx src/main.ts   （cwd 才是 bot 目录）
+# 只匹配绝对路径的话，手动 npm start 起的实例是隐形的，会出现两个实例同时
+# 长轮询、每条微信消息被回两遍，而 status 只报告得出一个。
 is_our_bot() {
-  local pid="$1"
+  local pid="$1" cmd
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  ps -o command= -p "$pid" 2>/dev/null | grep -q "$BOT_DIR/src/main.ts"
+  cmd="$(ps -o command= -p "$pid" 2>/dev/null)" || return 1
+  case "$cmd" in
+    *"$BOT_DIR/src/main.ts"*) return 0 ;;
+    *src/main.ts*) [ "$(proc_cwd "$pid")" = "$BOT_DIR" ] && return 0 ;;
+  esac
+  return 1
+}
+
+# 列出所有属于本目录的 bot 进程 pid（含 tsx fork 出来的子进程），按启动顺序
+all_bot_pids() {
+  local pid
+  for pid in $(pgrep -f "src/main.ts" 2>/dev/null); do
+    is_our_bot "$pid" && echo "$pid"
+  done
 }
 
 # 找出正在跑的 bot 主进程 pid（先看 pid 文件，再全局扫一遍，兼容 launchd 起的）
@@ -41,7 +64,7 @@ running_pid() {
     rm -f "$PID_FILE"
   fi
   # tsx 会 fork 一个子进程，两个都匹配；取最早的那个（父进程）
-  pgrep -f "$BOT_DIR/src/main.ts" 2>/dev/null | head -1
+  all_bot_pids | head -1
 }
 
 autostart_loaded() {
@@ -118,8 +141,8 @@ cmd_stop() {
     kill -9 "$pid" 2>/dev/null || true
     sleep 1
   fi
-  # tsx 的子进程可能还活着，一并收掉
-  pkill -f "$BOT_DIR/src/main.ts" 2>/dev/null || true
+  # tsx 的子进程、以及 npm start 起的相对路径实例，一并收掉
+  for p in $(all_bot_pids); do kill -9 "$p" 2>/dev/null || true; done
   rm -f "$PID_FILE"
   echo "✅ 已停止"
   if autostart_loaded; then
@@ -136,6 +159,19 @@ cmd_status() {
     ps -o pid,etime,rss,command= -p "$pid" | sed 's/^/      /'
   else
     echo "状态：⚪️ 未运行"
+  fi
+
+  # 同一个账号被两个实例长轮询 → 每条微信消息会被回两遍。tsx 自己会 fork 一个
+  # 子进程，所以「一个实例」正常是 2 个 pid；多于 2 个就是真的起重了。
+  local pids count
+  pids="$(all_bot_pids | tr '\n' ' ')"
+  count="$(echo $pids | wc -w | tr -d ' ')"
+  if [ "$count" -gt 2 ]; then
+    echo ""
+    echo "⚠️  检测到多个 bot 实例在跑 (PID: $pids)"
+    echo "   两个实例会同时长轮询同一个账号，每条消息被处理两遍（微信里表现为回复两次）。"
+    echo "   通常是 launchd 已经起了一个，又手动跑了 npm start。"
+    echo "   处理：./ctl.sh stop && ./ctl.sh start  （或只留 launchd：./ctl.sh stop 后不要手动起）"
   fi
   if autostart_loaded; then
     echo "开机自启：🟢 已启用（launchd ${PLIST_NAME}）"
