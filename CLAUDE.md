@@ -91,9 +91,12 @@ launchd a sane PATH (Homebrew/nvm/Volta) since it runs with a minimal environmen
 are present but commented out (uncomment if operating from behind a firewall).
 
 ## Gotchas
-- `bot/launchd/com.heinu1.wechat-bot.plist` hardcodes `/Users/jason/Dev/tools/Heinu1/bot`, which is
-  NOT this repo's location. The plist path must be fixed (or regenerated) before the service will
-  run from a different checkout.
+- `bot/launchd/com.heinu1.wechat-bot.plist` is a template containing `__BOT_DIR__` / `__HOME__`;
+  `setup.sh` renders it with the real paths into `~/Library/LaunchAgents/`. Editing the rendered
+  copy is what takes effect — re-run `setup.sh` (or `ctl.sh autostart off && on`) after changes.
+- `bot/ctl.sh` is the start/stop entry point (`start|stop|restart|status|logs|fg` plus
+  `autostart on|off|status`). Only one machine may run the bot at a time; deployment runbook for
+  the always-on Mac mini is `docs/DEPLOY-MACMINI.md`.
 - The WeChat-facing command set (`/ws`, `/new`, `/sessions`, `/resume`, `/status`, `/help`) is
   defined entirely in `router.ts`'s `handleCommand`/`handleWs`. `/stop` works: it calls
   `AbortController.abort()`, which kills the `claude` subprocess via the `signal` option on `spawn`.

@@ -15,12 +15,15 @@ npm run ws -- <sub>  # workspace CLI: list | add <name> <path> [desc] | rm <name
 npx tsc --noEmit     # type-check without emitting (no build step exists)
 ```
 
-macOS service (label `com.heinu1.wechat-bot`):
+Start/stop (prefer `ctl.sh` over raw `launchctl` — it also reports the autostart switch):
 ```bash
-launchctl start com.heinu1.wechat-bot
-launchctl stop  com.heinu1.wechat-bot
-launchctl list | grep heinu1
+./ctl.sh start | stop | restart | status | logs | fg
+./ctl.sh autostart on | off | status   # launchd 开机自启 (com.heinu1.wechat-bot)
 ```
+A machine either runs 24/7 via launchd (`autostart on`, e.g. the Mac mini) or is manual-only
+(`autostart off` + `ctl.sh start/stop`). Only ONE machine may run at a time — the iLink token is
+bound to the WeChat account and two long-pollers steal each other's messages.
+See `docs/DEPLOY-MACMINI.md` for the full 24/7 deployment runbook.
 
 ## Source module responsibilities
 
@@ -119,8 +122,8 @@ SQLite session is resumed (or a fresh session starts).
 
 ## Gotchas
 
-- `launchd/com.heinu1.wechat-bot.plist` hardcodes `/Users/jason/Dev/tools/Heinu1/bot` — fix or
-  regenerate if the checkout path changes.
+- `launchd/com.heinu1.wechat-bot.plist` is a TEMPLATE: `__BOT_DIR__` / `__HOME__` are substituted
+  by `setup.sh` when it writes `~/Library/LaunchAgents/`. Never point launchd at the in-repo file.
 - `CLAUDE_PERMISSION_MODE` defaults to `bypassPermissions`. The daemon runs Claude Code with full
   trust; the user is assumed to be the laptop owner.
 - `tsx` is CommonJS (`"type": "commonjs"` in `package.json`), `strict: true`. No emit, no bundler.

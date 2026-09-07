@@ -147,3 +147,10 @@ vite.config.ts.timestamp-*
 # Generated image source files
 assets/generated-florals/_keyed/
 assets/generated-florals-added/_keyed/
+
+# Playwright MCP 会话缓存
+.playwright-mcp/
+
+# 根目录下的临时截图 / 渲染稿（小红书长图等），不入库
+/thirsty-sprout-*.png
+/xhs-*.png

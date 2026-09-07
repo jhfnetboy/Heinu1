@@ -124,7 +124,15 @@ npm start
 
 用微信扫码，添加 **ClawBot** 为联系人，完成。
 
-> **之后每次开机自动启动**，无需手动运行 `npm start`。
+之后按这台机器的定位选运行模式：
+
+```bash
+./ctl.sh autostart on    # 常驻服务器：开机自启 + 崩溃自动拉起（推荐 Mac mini）
+./ctl.sh autostart off   # 办公电脑：不常驻，用 ./ctl.sh start / stop 手动控制
+```
+
+> 要把机器人挪到一台 Mac mini 上 7×24 跑，照 **[docs/DEPLOY-MACMINI.md](docs/DEPLOY-MACMINI.md)**
+> 一步步来（含防睡眠、自动登录、断电自启、旧机器迁移）。
 
 ---
 
@@ -235,15 +243,36 @@ npm run ws -- show                           # 查看配置文件原始内容
 
 ## 日常运维
 
-```bash
-npm start                              # 手动启动（首次登录）
-npm run relogin                        # 清除 token，重新扫码
-npm run logs                           # 实时查看日志
+所有启停都走 `bot/ctl.sh`，一个脚本管到底：
 
-launchctl start com.heinu1.wechat-bot  # 后台启动（已 setup 之后）
-launchctl stop  com.heinu1.wechat-bot  # 停止
-launchctl list | grep heinu1           # 查看服务状态
+```bash
+cd bot
+
+./ctl.sh start          # 后台启动
+./ctl.sh stop           # 停止
+./ctl.sh restart        # 重启
+./ctl.sh status         # 状态（进程 + 开机自启 + 最近日志）
+./ctl.sh logs           # 实时日志
+./ctl.sh fg             # 前台启动（首次扫码登录用，Ctrl-C 退出）
+
+./ctl.sh autostart on       # 开启开机自启 + 常驻保活（launchd）
+./ctl.sh autostart off      # 关闭开机自启（进程一并退出）
+./ctl.sh autostart status   # 查看开机自启开关
 ```
+
+```bash
+npm run relogin         # 清除 token，重新扫码
+```
+
+> **两种运行模式，按机器选一种：**
+>
+> | 机器 | 模式 | 怎么做 |
+> |---|---|---|
+> | 常驻服务器（Mac mini） | 24 小时在线、开机自启、崩了自动拉起 | `./ctl.sh autostart on` |
+> | 日常办公电脑 | 想跑才跑，不占后台 | `./ctl.sh autostart off`，之后 `./ctl.sh start` / `stop` |
+>
+> **同一时间只能有一台机器在线**——ClawBot 的 token 绑在微信账号上，两台同时长轮询会互相抢消息。
+> 完整的 Mac mini 常驻部署手册见 **[docs/DEPLOY-MACMINI.md](docs/DEPLOY-MACMINI.md)**。
 
 ---
 
