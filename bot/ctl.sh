@@ -87,7 +87,29 @@ cmd_start() {
     echo "✅ bot 已经在运行了 (PID $pid)，无需重复启动"
     return 0
   fi
-  warn_if_autostart
+
+  # launchd 已加载时绝不手动 nohup fork：stop 之后到 launchd 的 KeepAlive 真正
+  # 把它拉起来之间有个空档（ThrottleInterval 10s），这段时间 running_pid 是空的，
+  # 如果这里再手动 fork 一个，就会跟 launchd 稍后拉起的那个变成两个实例同时
+  # 长轮询——这正是之前 restart 之后出现 4 个 pid 的原因。autostart 开着时，
+  # 交给 launchd 自己重启，不要跟它抢。
+  if autostart_loaded; then
+    echo "🦞 launchd 常驻已启用，交给 launchd 拉起（不手动 fork，避免和它抢）…"
+    launchctl kickstart -k "gui/$(id -u)/$PLIST_NAME" 2>/dev/null \
+      || { echo "❌ launchctl kickstart 失败"; return 1; }
+    sleep 2
+    pid="$(running_pid || true)"
+    if [ -n "$pid" ]; then
+      echo "✅ 已启动 (PID $pid)"
+      echo "   日志：$LOG_FILE   （./ctl.sh logs 实时看）"
+    else
+      echo "❌ 启动失败，最后 20 行错误日志："
+      tail -20 "$ERR_FILE" || true
+      return 1
+    fi
+    return 0
+  fi
+
   echo "🦞 启动 Heinu1 WeChat Bot（后台）…"
   cd "$BOT_DIR"
   nohup ./start.sh >>"$LOG_FILE" 2>>"$ERR_FILE" &

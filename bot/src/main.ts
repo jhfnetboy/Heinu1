@@ -8,6 +8,22 @@ import { Router } from './router';
 import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
 
+// 全局安全网：任何一个没被 try/catch 接住的 promise 拒绝或异常，默认会让整个
+// Node 进程崩溃退出——哪怕只是长轮询之外某个 fetch（比如 KB 抓链接、mp_bridge
+// 调用）撞上一次网络抖动（ENETUNREACH 之类）。之前就真的这样崩过一次：机器
+// 收到消息、正常处理、只是网络临时不通，结果整个 daemon 直接退出，用户看到
+// 的是"消息发了没反应"。
+// monitor.ts 自己的长轮询已经有 try/catch + 重连，会一直重试；这里只是兜底
+// 接住"漏网"的那些。真正卡死不动的情况仍然交给 config.ts 的
+// WATCHDOG_TIMEOUT_MS（180s 无成功轮询）主动退出，让 launchd 重启——那个机制
+// 不受影响，这里只是不让"一次性网络错误"直接判死刑。
+process.on('uncaughtException', (err) => {
+  console.error('[fatal-guard] 未捕获异常，已拦截，进程继续运行:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal-guard] 未处理的 promise 拒绝，已拦截，进程继续运行:', reason);
+});
+
 async function main() {
   const args = process.argv.slice(2);
   console.log('🦞 Heinu1 WeChat Bot');
