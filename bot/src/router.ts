@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { WeixinMessage, MessageItem, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
@@ -698,6 +700,26 @@ export class Router {
     } catch (err: any) {
       console.error('[router] error:', err.message);
       this.lastFailed.set(userId, prompt);
+
+      if (isClaudeAuthError(err.message)) {
+        const outcome = tryAuthSelfHeal();
+        if (outcome === 'restarting') {
+          await this.reply(userId,
+            '⚠️ Claude 登录态临时失效（常见于 claude CLI 后台自动升级后），机器人正在自动重启恢复，约 10 秒后请重新发送。');
+          console.error('[router] claude 认证失败，自动重启 daemon 以恢复');
+          this.running.delete(userId);
+          this.aborts.delete(userId);
+          process.exit(1); // launchd KeepAlive 立刻拉起全新进程树；不会执行到下面
+        } else {
+          await this.reply(userId,
+            '❌ Claude 登录态失效，已自动重启过一次但仍然失败，需要人工检查：\n' +
+            '1. 终端跑 `claude -p "hi"` 看能不能正常回复\n' +
+            '2. 不行就跑 `claude` 重新登录一遍\n' +
+            '3. 然后 ./ctl.sh restart');
+        }
+        return;
+      }
+
       await this.reply(userId, `❌ 出错了：${err.message}\n💡 发 /retry 可重试`);
     } finally {
       this.running.delete(userId);
@@ -719,6 +741,35 @@ export class Router {
     if (!ctxToken) { console.error('[router] no context_token for', userId); return; }
     await this.sender.send(userId, ctxToken, text);
   }
+}
+
+const AUTH_RECOVERY_FILE = path.join(CONFIG.DATA_DIR, 'auth-recovery.json');
+const AUTH_RECOVERY_COOLDOWN_MS = 5 * 60 * 1000; // 5 分钟内只自动重启一次
+
+function isClaudeAuthError(message: string): boolean {
+  return /Failed to authenticate|OAuth session expired/i.test(message);
+}
+
+/**
+ * 2026-10-06 实测：claude CLI 后台自动升级（native 渠道会忽略 autoUpdates:false，
+ * 见 ~/.claude.json 的 autoUpdatesProtectedForNative）之后，这个长命 daemon 进程树
+ * 里 spawn 出来的 claude 子进程会持续报 "OAuth session expired and could not be
+ * refreshed"——但凭据文件/钥匙串本身是健康的：同一时刻在终端里直接跑 `claude -p`
+ * 完全正常。重启 daemon（launchd 起一个全新进程树）之后当场恢复。
+ *
+ * 所以命中这个特征错误时自动重启一次；5 分钟内再次命中（说明重启没解决真正问题，
+ * 比如 refresh token 真的过期/被吊销了）就不再自动重启，否则会陷入重启循环。
+ */
+function tryAuthSelfHeal(): 'restarting' | 'already-tried' {
+  let lastRestartAt = 0;
+  try {
+    lastRestartAt = JSON.parse(fs.readFileSync(AUTH_RECOVERY_FILE, 'utf8')).lastRestartAt ?? 0;
+  } catch { /* 没有记录文件，当作从未自动重启过 */ }
+
+  if (Date.now() - lastRestartAt < AUTH_RECOVERY_COOLDOWN_MS) return 'already-tried';
+
+  fs.writeFileSync(AUTH_RECOVERY_FILE, JSON.stringify({ lastRestartAt: Date.now() }));
+  return 'restarting';
 }
 
 function formatAgo(ms: number): string {
