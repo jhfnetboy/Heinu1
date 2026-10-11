@@ -19,9 +19,9 @@
 | 机器 | Mac mini（Apple Silicon / Intel 都行），macOS 13+ | `sw_vers` |
 | 用户 | 一个**能自动登录的桌面用户**（launchd GUI agent 需要图形登录会话） | — |
 | Node.js | 18+（推荐 20/22） | `node -v` |
-| Claude Code | 已安装并**已登录**（订阅或 API key） | `claude --version` && `claude -p "hi"` |
+| Codex | 已安装并**已登录**（订阅或 API key） | `codex --version` && `codex login status` |
 | 微信 | ≥ 2026.3.20（支持 iLink Bot），手机上能扫码 | 微信 → 关于微信 |
-| 网络 | 能直连 `ilinkai.weixin.qq.com` 与 Anthropic API（必要时配代理，见第 6 节） | — |
+| 网络 | 能直连 `ilinkai.weixin.qq.com` 与 Codex 服务（必要时配代理，见第 6 节） | — |
 | 磁盘 | ≥ 10 GB 可用（工作区 + 知识库 + 日志） | `df -h ~` |
 
 ---
@@ -65,14 +65,14 @@ pmset -g custom
 # Node.js
 brew install node          # 或者用 nvm 装 20/22
 
-# Claude Code CLI
-npm install -g @anthropic-ai/claude-code
-claude          # 走一遍登录流程（浏览器授权或填 API key）
-claude -p "说一句你好"     # 必须能正常返回，否则机器人也跑不通
+# Codex CLI
+npm install -g @openai/codex
+codex login    # 在运行机器人的同一 Mac 用户下登录
+codex exec --skip-git-repo-check "说一句你好"     # 必须能正常返回，否则机器人也跑不通
 ```
 
-**Claude Code 一定要在这台机器上登录成功再往下走。** 机器人只是 `spawn("claude", ...)`，
-它自己不管认证；`claude -p` 跑不通，机器人收到消息也只会回一句错误。
+**Codex 一定要在这台机器上登录成功再往下走。** 机器人只是 `spawn("codex", ...)`，
+它自己不管认证；`codex exec` 跑不通，机器人收到消息也只会回一句错误。
 
 ---
 
@@ -226,13 +226,13 @@ chmod 600 ~/.heinu1-bot/token.json
 
 | 症状 | 原因 / 处理 |
 |---|---|
-| `launchctl list` 里退出码是 1，进程反复重启 | 十有八九是 `claude` 跑不通或代理没配。**用 launchd 的干净环境复现**：`env -i HOME=$HOME /bin/bash -lc 'cd ~/Dev/tools/Heinu1/bot && ./start.sh'`，看真实报错 |
+| `launchctl list` 里退出码是 1，进程反复重启 | 十有八九是 `codex` 跑不通或代理没配。**用 launchd 的干净环境复现**：`env -i HOME=$HOME /bin/bash -lc 'cd ~/Dev/tools/Heinu1/bot && ./start.sh'`，看真实报错 |
 | 微信发消息没反应，但进程在跑 | 看 `bot.log` 有没有 `[monitor]` 长轮询记录；180s 没成功轮询看门狗会自杀重启。也确认没有第二台机器在抢消息 |
 | 重启 Mac mini 后机器人没起来 | 没开自动登录（第 1 节）。用户级 launchd agent 必须有图形登录会话 |
 | 提示 token 失效 / 要求重新扫码 | `./ctl.sh autostart off` → `npm run relogin` 扫码 → `./ctl.sh autostart on` |
-| 回复很慢或超时 | 正常，`claude` 真在干活；`/status` 看进度，`/stop` 可中止当前任务 |
+| 回复很慢或超时 | 正常，`codex` 真在干活；`/status` 看进度，`/stop` 可中止当前任务 |
 | 链接转发进来抓不到正文 | `git submodule update --init --recursive` 没跑，`libs/agent-reach` 是空的 |
-| 想改权限模式 | 编辑 `~/Library/LaunchAgents/com.heinu1.wechat-bot.plist` 里的 `CLAUDE_PERMISSION_MODE`，然后 `./ctl.sh autostart off && ./ctl.sh autostart on` |
+| 想改权限模式 | 编辑 `~/Library/LaunchAgents/com.heinu1.wechat-bot.plist` 里的 `CODEX_SANDBOX_MODE`，然后 `./ctl.sh autostart off && ./ctl.sh autostart on` |
 
 ---
 

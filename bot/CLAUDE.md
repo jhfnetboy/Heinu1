@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Read `../AGENTS.md` first for the current Codex default, provider isolation, testing and deployment rules.
+
 The parent-level CLAUDE.md (`../CLAUDE.md`) covers the overall architecture and commands. This file
 adds detail specific to working inside `bot/`.
 
@@ -39,8 +41,10 @@ See `docs/DEPLOY-MACMINI.md` for the full 24/7 deployment runbook.
 | `ilink/monitor.ts` | Long-poll loop (`/ilink/bot/getupdates`), cursor management, reconnect-on-error |
 | `ilink/sender.ts` | Reply chunking at `MAX_MSG_LEN` (1800 chars) + typing indicator |
 | `ilink/types.ts` | Verbatim enums from the iLink reference SDK — do not "clean up" their values |
+| `agent/runner.ts` | Backend dispatch; default Codex, optional Claude |
+| `codex/runner.ts` | Codex exec/resume, JSONL, process-group cancellation |
 | `claude/runner.ts` | Spawns `claude --print --output-format stream-json --verbose`, parses JSONL events |
-| `claude/store.ts` | SQLite sessions table scoped by `(user_openid, workspace)` |
+| `claude/store.ts` | SQLite sessions table scoped by `(user_openid, workspace, provider)` |
 | `ilink/cdn.ts` | CDN media download + AES-128-ECB decryption; `saveMedia` writes to `~/.heinu1-bot/media/` |
 | `kb/mempalace-store.ts` | `MempalaceStore` — drop-in KbStore replacement; shells out to `scripts/mp_bridge.py` for all KB ops |
 | `kb/ingest.ts` | Builds the KB instruction appended to ingest-worthy prompts, parses the ` ```kb-record ` block Claude emits, archives raw files |
@@ -85,7 +89,7 @@ Non-JSON lines (debug output from Claude) are silently skipped.
 ## Turn-based message buffering
 
 Non-command messages from the same user accumulate in a **PendingTurn** for `TURN_TIMEOUT_MS`
-(default 10 s) of silence. When the timer fires, `flushTurn` runs:
+(default 30 s) of silence. When the timer fires, `flushTurn` runs:
 
 1. `downloadTurnMedia` — downloads IMAGE / FILE / VIDEO items from the WeChat CDN (AES-128-ECB
    decrypt via `cdn.ts`), saves to `~/.heinu1-bot/media/<uuid>.<ext>`
@@ -93,7 +97,7 @@ Non-command messages from the same user accumulate in a **PendingTurn** for `TUR
    - TEXT → raw text; VOICE → `[语音] <transcription>` or `[语音（未识别）]`
    - IMAGE/FILE/VIDEO → `[图片: /path]` / `[文件: name → /path]` / `[视频: /path]`
    - single plain-text message is passed through unchanged (no brackets)
-3. `runTask` — spawns `claude` with the assembled prompt; `MEDIA_DIR` is always appended to
+3. `runTask` — calls `runAgent` with the assembled prompt; `MEDIA_DIR` is always appended to
    `--add-dir` so Claude can read downloaded files
 
 Commands (`/...`) execute immediately and bypass the turn buffer.

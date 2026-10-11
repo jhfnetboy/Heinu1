@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { WeixinMessage, MessageItem, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
-import { runClaude, RunEvent } from './claude/runner';
+import { runAgent, RunEvent, AGENT_LABEL } from './agent/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
@@ -12,9 +12,9 @@ import {
   archiveRawFiles, parseKbRecord, stripKbRecord, fallbackRecord,
 } from './kb/ingest';
 
-const HELP = `🦞 Claude Code 微信机器人
+const HELP = `🦞 ${AGENT_LABEL} 微信机器人
 
-直接发消息 → Claude Code 帮你干活
+直接发消息 → ${AGENT_LABEL} 帮你干活
 支持：文字、图片、语音、文件（含PDF）、视频
 
 ─ 会话命令 ─
@@ -65,7 +65,8 @@ interface KbContext {
 }
 
 export class Router {
-  private activeSession = new Map<string, string>();
+  // null explicitly requests a fresh thread; absence recovers the latest saved one.
+  private activeSession = new Map<string, string | null>();
   private contextTokens = new Map<string, string>();
   private running       = new Set<string>();
   private aborts        = new Map<string, AbortController>();
@@ -352,7 +353,7 @@ export class Router {
         if (this.running.has(userId)) {
           await this.reply(userId, '⏳ 当前有任务运行，结束后再开新会话'); return;
         }
-        this.activeSession.delete(userId);
+        this.activeSession.set(userId, null);
         const ws = this.wsm.currentName(userId);
         await this.reply(userId,
           `✅ 已重置会话\n工作区: ${ws}` + (hadTurn ? '\n（待处理的消息轮次已取消）' : ''));
@@ -397,6 +398,8 @@ export class Router {
         const failed  = this.lastFailed.get(userId);
         await this.reply(userId,
           `${this.running.has(userId) ? '🔄 运行中' : turn ? '⏳ 收集消息中' : '⏸ 空闲'}\n` +
+          `执行后端: ${AGENT_LABEL}\n` +
+          `模型: ${CONFIG.AGENT_PROVIDER === 'codex' ? CONFIG.CODEX_MODEL || 'Codex 本机默认' : CONFIG.CLAUDE_MODEL}\n` +
           `工作区: ${ws} (${wsDef.path})\n` +
           (turn    ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
           (queue   ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
@@ -596,20 +599,20 @@ export class Router {
       await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
         ingestNote + `\n📝 ${preview}`);
 
-      // Piggyback KB extraction on this single claude run — no extra LLM call.
+      // Piggyback KB extraction on this single agent run — no extra LLM call.
       // URL turns get the agent-reach fetch instruction; media turns the basic one.
       const kbInstruction = !kbCtx ? ''
         : kbCtx.urls.length ? buildUrlInstruction(kbCtx.urls, kbCtx.rawPaths)
         : KB_INSTRUCTION;
-      const claudePrompt = prompt + kbInstruction;
+      const agentPrompt = prompt + kbInstruction;
 
-      const existingUuid = this.activeSession.get(userId)
-                           ?? this.store.getLatest(userId, wsName)?.session_uuid
-                           ?? null;
+      const existingUuid = this.activeSession.has(userId)
+        ? this.activeSession.get(userId) ?? null
+        : this.store.getLatest(userId, wsName)?.session_uuid ?? null;
       newSessionId = existingUuid;
 
-      const finalSid = await runClaude(
-        claudePrompt,
+      const finalSid = await runAgent(
+        agentPrompt,
         {
           sessionId: existingUuid,
           cwd:       wsDef.path,
@@ -660,7 +663,7 @@ export class Router {
                         ?? fallbackRecord(kbCtx.rawText, kbCtx.hasMedia, kbCtx.urls.length > 0);
         displaySource = stripKbRecord(displaySource);
         try {
-          // Archive both WeChat-uploaded media AND files Claude downloaded
+          // Archive both WeChat-uploaded media AND files the agent downloaded
           // from URLs (already path-validated in parseKbRecord). De-dup.
           const toArchive = [...new Set([...kbCtx.rawPaths, ...parsed.saved_files])];
           const archived = archiveRawFiles(toArchive);
@@ -699,7 +702,11 @@ export class Router {
       console.error('[router] error:', err.message);
       this.lastFailed.set(userId, prompt);
 
-      if (isClaudeAuthError(err.message)) {
+      if (CONFIG.AGENT_PROVIDER === 'codex' && /unauthorized|authentication|not logged in|token.*expired|401/i.test(err.message)) {
+        await this.reply(userId, '❌ Codex 登录失效，请在运行机器人的 Mac 用户下执行 codex login，再发 /retry。');
+        return;
+      }
+      if (CONFIG.AGENT_PROVIDER === 'claude' && isClaudeAuthError(err.message)) {
         // 机器人(launchd)优先读钥匙串里的 Claude 凭证；那条一旦坏掉(比如被写成空 token)
         // 就不会再退回读终端用的 ~/.claude/.credentials.json，终端重新登录也没用。
         await this.reply(userId,

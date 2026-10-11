@@ -1,21 +1,7 @@
 import { spawn } from 'child_process';
 import { CONFIG } from '../config';
-
-export interface RunOptions {
-  sessionId:  string | null;
-  cwd:        string;          // working directory for Claude Code
-  extraDirs?: string[];        // --add-dir paths
-  signal?:    AbortSignal;     // abort to kill the claude subprocess (/stop)
-}
-
-export interface RunEvent {
-  type:       'session_id' | 'text' | 'tool' | 'result' | 'error';
-  text?:      string;
-  toolName?:  string;
-  toolInput?: string;
-  sessionId?: string;
-  costUsd?:   number;
-}
+import type { RunOptions, RunEvent } from '../agent/runner';
+export type { RunOptions, RunEvent } from '../agent/runner';
 
 type EventCallback = (ev: RunEvent) => void;
 

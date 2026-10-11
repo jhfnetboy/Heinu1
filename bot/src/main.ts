@@ -7,6 +7,7 @@ import { SessionStore } from './claude/store';
 import { Router } from './router';
 import { WorkspaceManager } from './workspace';
 import { CONFIG } from './config';
+import { AGENT_LABEL } from './agent/runner';
 
 // 全局安全网：任何一个没被 try/catch 接住的 promise 拒绝或异常，默认会让整个
 // Node 进程崩溃退出——哪怕只是长轮询之外某个 fetch（比如 KB 抓链接、mp_bridge
@@ -28,9 +29,12 @@ async function main() {
   const args = process.argv.slice(2);
   console.log('🦞 Heinu1 WeChat Bot');
   console.log(`   数据目录: ${CONFIG.DATA_DIR}`);
-  console.log(`   权限模式: ${CONFIG.CLAUDE_PERMISSION_MODE}\n`);
+  console.log(`   执行后端: ${AGENT_LABEL}`);
+  console.log(`   模型: ${CONFIG.AGENT_PROVIDER === 'codex' ? CONFIG.CODEX_MODEL || '继承 Codex 本机配置' : CONFIG.CLAUDE_MODEL}`);
+  console.log(`   权限模式: ${CONFIG.AGENT_PROVIDER === 'codex' ? CONFIG.CODEX_SANDBOX_MODE : CONFIG.CLAUDE_PERMISSION_MODE}\n`);
 
   fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
+  fs.mkdirSync(CONFIG.MEDIA_DIR, { recursive: true });
   if (args.includes('--relogin')) clearToken();
 
   let loginResult: Awaited<ReturnType<typeof login>>;

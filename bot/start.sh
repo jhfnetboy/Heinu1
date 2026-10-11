@@ -4,7 +4,7 @@
 # Homebrew (Apple Silicon / Intel)
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Claude Code CLI (~/.local/bin/claude)
+# Coding CLIs (~/.local/bin/codex and optional claude)
 export PATH="$HOME/.local/bin:$PATH"
 
 # nvm (if installed)
@@ -18,7 +18,7 @@ export VOLTA_HOME="$HOME/.volta"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Proxy for Anthropic API access — uncomment if behind a firewall/VPN
+# Proxy for external API access — uncomment if behind a firewall/VPN
 # export HTTP_PROXY="http://127.0.0.1:7890"
 # export HTTPS_PROXY="http://127.0.0.1:7890"
 # export ALL_PROXY="socks5://127.0.0.1:7890"

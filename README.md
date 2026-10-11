@@ -5,15 +5,15 @@
   <img src="https://img.shields.io/badge/platform-macOS-black?style=for-the-badge&logo=apple" alt="macOS"/>
   <img src="https://img.shields.io/badge/TypeScript-5.4-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript"/>
   <img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js"/>
-  <img src="https://img.shields.io/badge/Claude_Code-powered-FF6B35?style=for-the-badge" alt="Claude Code"/>
+  <img src="https://img.shields.io/badge/Codex-powered-FF6B35?style=for-the-badge" alt="Codex"/>
   <img src="https://img.shields.io/badge/WeChat-iLink_Official_API-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat iLink"/>
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="MIT"/>
   <img src="https://img.shields.io/badge/PRs-welcome-ff69b4?style=for-the-badge" alt="PRs Welcome"/>
 </p>
 
 <p align="center">
-  <b>用微信远程控制家里笔记本上的 Claude Code，随时随地让 AI 帮你干活。</b><br/>
-  <i>Control your home laptop's Claude Code from WeChat, anywhere, anytime.</i>
+  <b>用微信远程控制家里笔记本上的 Codex，随时随地让 AI 帮你干活。</b><br/>
+  <i>Control your home laptop's Codex from WeChat, anywhere, anytime.</i>
 </p>
 
 ---
@@ -22,7 +22,7 @@
 
 在微信里给 **ClawBot** 发一条消息，家里的笔记本就开始干活：
 
-| 你说什么 | Claude Code 做什么 |
+| 你说什么 | Codex 做什么 |
 |---|---|
 | 帮我把 vlog 脚本和公众号文章合并，发布到博客 | 读文件 → 合并 → 写博客 → git push → 回复"发布成功" |
 | 研究一下 MiMo Code 发布，写一篇分析 | 联网搜索 → 整合资料 → 写文章 → 保存到工作区 |
@@ -64,7 +64,7 @@
 </td>
 <td align="center" width="33%">
 <img src="docs/images/wechat-tools.jpg" width="100%"/>
-<br/><sub><b>Claude 调用工具执行任务（自动联网搜索）</b></sub>
+<br/><sub><b>调用工具执行任务（历史 Claude 截图）</b></sub>
 </td>
 <td align="center" width="33%">
 <img src="docs/images/wechat-result.jpg" width="100%"/>
@@ -85,7 +85,7 @@
 |---|---|
 | macOS（用 launchd 自动重启） | — |
 | Node.js 18+ | `node -v` |
-| Claude Code 已安装并登录 | `claude --version` |
+| Codex 已安装并登录 | `codex --version` / `codex login status` |
 | 微信版本 ≥ 2026.3.20（支持 iLink Bot） | 微信 → 关于微信 |
 
 ### 第一步：安装
@@ -149,9 +149,9 @@ npm start
 📁 工作区: blog
 📝 帮我把 dev-log.md 整理成一篇博…
 
-（Claude 读文件、写博客、执行 git push...）
+（Codex 读文件、写博客、执行 git push...）
 
-🔧 Read · Write · Bash
+🔧 command_execution · file_change
 
 已完成：将 dev-log.md 整理为博客文章 2026-06-11-dev-log.md，
 共 847 字，已 git push 到远程。
@@ -165,7 +165,7 @@ npm start
 /ws blog         → 切换到 blog 目录
 ```
 
-切换后 Claude Code 的工作目录和对话上下文**同时切换**。
+切换后 Codex 的工作目录和对话上下文**同时切换**。
 
 ### 管理会话
 
@@ -211,7 +211,7 @@ Bot：（抓取正文 → 总结 → 回复）
 
 链接会先用 `libs/agent-reach` 抓正文（小红书 / 公众号 / 普通网页），再连同总结一起入库。
 
-**存在哪：** 全局 MemPalace —— `~/.mempalace/palace`（wing 为 `heinu1`），和这台机器上所有 Claude Code 会话共用同一个知识库，不是 Bot 私有的小 SQLite。原始图片文件仍按日期归档在 `~/.heinu1-bot/kb/raw/`。
+**存在哪：** 全局 MemPalace —— `~/.mempalace/palace`（wing 为 `heinu1`），供这台机器上的 coding agent 会话共用，不是 Bot 私有的小 SQLite。原始图片文件仍按日期归档在 `~/.heinu1-bot/kb/raw/`。
 
 **依赖：** 需要本机装好 MemPalace，默认走 `~/.mempalace/venv/bin/python`。venv 在别处就设环境变量：
 
@@ -276,44 +276,40 @@ npm run relogin         # 清除 token，重新扫码
 
 ---
 
-## 权限模式
+## 执行后端与权限
 
-在 `bot/launchd/com.heinu1.wechat-bot.plist` 里调整（改完需重载服务）：
+默认 `AGENT_PROVIDER=codex`，调用本机已登录的 Codex。`CODEX_MODEL` 未设置时继承本机 Codex 配置；设置后只覆盖机器人任务。
 
-| 模式 | 说明 | 适合场景 |
+在 `bot/launchd/com.heinu1.wechat-bot.plist` 模板或已安装的 `~/Library/LaunchAgents/com.heinu1.wechat-bot.plist` 调整，已安装服务需要 `./ctl.sh autostart off` 再 `./ctl.sh autostart on` 重载。
+
+| 配置 | 默认值 | 说明 |
 |---|---|---|
-| `bypassPermissions` | 全自动，无弹窗 | 家用机 **（默认推荐）** |
-| `acceptEdits` | 文件编辑自动批准，Bash 命令需审批 | 对 Bash 命令有顾虑时 |
-| `default` | 每个操作都需确认 | 生产环境/共享机器 |
+| `AGENT_PROVIDER` | `codex` | 可设 `claude` 回退到原后端 |
+| `CODEX_BIN` | `codex` | CLI 路径 |
+| `CODEX_MODEL` | 未设置 | 继承本机模型 |
+| `CODEX_SANDBOX_MODE` | `danger-full-access` | 延续机主全自动执行权限；也支持 `workspace-write`、`read-only` |
+
+Codex 无人值守任务使用 `approval_policy=never`。Claude 回退仍支持 `CLAUDE_BIN`、`CLAUDE_MODEL` 和 `CLAUDE_PERMISSION_MODE`。
+
+旧 Claude 会话保留在数据库，按后端隔离。切到 Codex 后首次任务开启新会话，`/sessions` 和 `/resume` 只查看当前后端的历史。
 
 ---
 
 ## 工作原理
 
-```
-手机微信
-  │
-  │  (iLink Bot API — 腾讯官方，HTTP Long-poll，无封号风险)
-  ▼
-ilinkai.weixin.qq.com
-  │
-  ▼
-bot/src/main.ts  ← 本地守护进程，运行在家里的笔记本
-  ├── Monitor    → 长轮询收消息（每次最长 35 秒 hold）
-  ├── Router     → 解析命令 / 转发任务给 Claude Code
-  │                    ↓
-  │               spawn("claude --print <消息>
-  │                      --resume <session-id>
-  │                      --output-format stream-json
-  │                      --permission-mode bypassPermissions",
-  │                      { cwd: 工作区路径 })
-  │                    ↓
-  │               逐行解析 JSONL 事件流
-  │               → 任务完成，取 result 摘要
-  └── Sender     → POST /sendmessage 发回微信
+```text
+微信 → iLink 官方 API → Monitor → Router → runAgent
+                                         ↓
+                              codex exec --json -
+                              cwd = 当前工作区
+                              prompt = stdin
+                                         ↓
+                         thread.started / item.* / turn.completed
+                                         ↓
+                         SQLite 保存 thread ID → Sender 回复微信
 ```
 
-**设计决策：** 每条消息 spawn 一个新的 `claude` 进程（不是持久进程）。上下文续接靠 `--resume <session-id>`，会话历史存在 `~/.claude/projects/`。工作区切换时同时换 `cwd` 和 `session-id`，两者始终绑定。详见 [docs/sdk-vs-cli-analysis.md](docs/sdk-vs-cli-analysis.md)。
+每轮任务启动一个 CLI 进程，连续对话通过 `codex exec resume <thread-id> -` 恢复。SQLite 按用户、工作区和后端记录会话，真实对话由对应 CLI 持久化。工作区的 `AGENTS.md` 和 skills 指导 Codex 执行文章发布等任务。
 
 ---
 
@@ -334,8 +330,10 @@ Heinu1/
 │   │   │   ├── monitor.ts   ← 长轮询消息接收
 │   │   │   ├── sender.ts    ← 发送消息（含分片 1800 字）
 │   │   │   └── types.ts     ← iLink 协议类型
+│   │   ├── agent/runner.ts  ← 后端分发与通用事件
+│   │   ├── codex/runner.ts  ← Codex exec / resume JSONL
 │   │   ├── claude/
-│   │   │   ├── runner.ts    ← spawn claude CLI，解析 stream-json
+│   │   │   ├── runner.ts    ← 可选 Claude 后端，解析 stream-json
 │   │   │   └── store.ts     ← SQLite 会话管理
 │   │   └── kb/
 │   │       ├── ingest.ts          ← 入库指令拼装 + kb-record 解析 + 原始文件归档
@@ -372,36 +370,28 @@ Bot 进程会自动退出，launchd 自动重启并弹出二维码，重新扫�
 
 ## 技术细节
 
-### Claude Code 是怎么被调用的
+### Codex 是怎么被调用的
 
-```
-Router.runTask("帮我重构 xxx 文件")
-  │
-  └─ runClaude(prompt, { sessionId, cwd, extraDirs })
-       │
-       ├─ spawn("claude", [
-       │    "--print", "帮我重构 xxx 文件",
-       │    "--resume", "abc-123",           ← 续接上次会话
-       │    "--output-format", "stream-json",
-       │    "--verbose",
-       │    "--permission-mode", "bypassPermissions"
-       │  ], { cwd: "/Users/jason/Dev/myproject" })
-       │
-       └─ 逐行读取 stdout（JSONL 格式）：
-          {"type":"system","subtype":"init","session_id":"abc-123"}
-          {"type":"assistant","message":{"content":[{"type":"text","text":"我来看看..."}]}}
-          {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{...}}]}}
-          {"type":"result","result":"重构完成，主要改动是...","session_id":"abc-123","cost_usd":0.02}
-            │
-            └─ 取 result 字段作为回复摘要发回微信（不发全文）
+```bash
+# 新会话，提示词通过 stdin 传入
+codex exec --json --skip-git-repo-check \
+  -c 'approval_policy="never"' -c 'sandbox_mode="danger-full-access"' -
+
+# 连续对话，同样通过 stdin 传入新消息
+codex exec --json --skip-git-repo-check \
+  -c 'approval_policy="never"' -c 'sandbox_mode="danger-full-access"' \
+  resume <thread-id> -
 ```
 
-**关键点：**
-- `--resume <session-id>` 让 Claude Code 继续上一次的对话上下文
-- `--output-format stream-json --verbose` 输出结构化 JSONL，可实时解析
-- `--permission-mode bypassPermissions` 家用机信任自己，文件读写/Bash 全自动执行
-- 回复只取 `result` 摘要，不把博客全文、文件内容等长输出转发到微信
-- 会话 ID 存 SQLite，重启 bot 也可以 `/resume` 续接之前的工作
+`thread.started` 提供会话 ID，工具条目形成工具摘要，`turn.completed` 后取最终 `agent_message` 回复微信。失败或缺少完成事件时提示错误；丢失的会话只在尚未执行工具前自动开启新会话，防止重复发布。`/stop` 会终止 Codex 及其命令子进程。
+
+验证（在 `bot/`）：
+
+```bash
+npm test              # 会话迁移、JSONL、恢复、失败、中止
+npx tsc --noEmit       # TypeScript 检查
+npm run smoke:codex    # 真实 CLI 的工具执行、文件写入与会话恢复；不发送微信
+```
 
 ### iLink 协议真实 API 路径（已验证）
 
@@ -448,14 +438,14 @@ Body: {
 ~/.heinu1-bot/
 ├── token.json          ← iLink bot_token + baseurl（mode 600）
 ├── workspaces.json     ← 工作区配置
-├── sessions.db         ← SQLite，会话记录（user × workspace 维度）
+├── sessions.db         ← SQLite，会话记录（user × workspace × provider 维度）
 ├── media/              ← 微信 CDN 下载并解密后的图片/文件/视频
 └── kb/raw/             ← 入库记录的原始文件，按日期归档
 
 ~/.mempalace/palace     ← 知识库记录本体（全局 MemPalace，跨项目共享）
 ```
 
-会话表结构：`(user_openid, workspace, session_uuid, title, created_at, last_used)`。切换工作区时 bot 自动加载该工作区最近一次的 `session_uuid` 用于 `--resume`。
+会话表结构：`(user_openid, workspace, provider, session_uuid, title, created_at, last_used)`。切换工作区时 bot 自动加载该工作区最近一次的 `session_uuid` 用于对应后端的会话恢复。
 
 知识库记录不落在 `~/.heinu1-bot/` 里，而是通过 `bot/scripts/mp_bridge.py` 写进全局 MemPalace，Bot 侧只留原始文件。
 

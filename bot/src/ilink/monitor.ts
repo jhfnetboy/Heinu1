@@ -9,6 +9,7 @@ export class Monitor {
   private running  = false;
   private lastOk   = Date.now();                 // last successful getupdates return
   private watchdog: NodeJS.Timeout | null = null;
+  private connectedLogged = false;
 
   constructor(
     private client:    ILinkClient,
@@ -18,6 +19,7 @@ export class Monitor {
   start() {
     this.running = true;
     this.lastOk  = Date.now();
+    this.connectedLogged = false;
     this.startWatchdog();
     this.loop().catch(err => {
       console.error('[monitor] 致命错误:', err.message);
@@ -62,6 +64,10 @@ export class Monitor {
         );
 
         this.lastOk = Date.now();   // round-trip succeeded — connection is healthy
+        if (!this.connectedLogged) {
+          console.log('[monitor] 长轮询连接正常');
+          this.connectedLogged = true;
+        }
 
         if (res.get_updates_buf) this.cursor = res.get_updates_buf;
 

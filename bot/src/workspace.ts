@@ -6,7 +6,7 @@ import { CONFIG } from './config';
 export interface WorkspaceDef {
   path:        string;
   description: string;
-  extra_dirs?: string[];   // passed as --add-dir to Claude Code
+  extra_dirs?: string[];   // passed as --add-dir to the coding CLI
 }
 
 export interface WorkspaceFile {

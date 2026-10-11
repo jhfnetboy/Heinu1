@@ -37,7 +37,12 @@
   <dict>
     <key>HOME</key>
     <string>__HOME__</string>
-    <!-- 如需修改权限模式：bypassPermissions / acceptEdits / default -->
+    <key>AGENT_PROVIDER</key>
+    <string>codex</string>
+    <!-- 与原先 Claude bypassPermissions 一致：机主自己的全自动任务 -->
+    <key>CODEX_SANDBOX_MODE</key>
+    <string>danger-full-access</string>
+    <!-- 保留 Claude 回退配置；AGENT_PROVIDER=claude 时才使用 -->
     <key>CLAUDE_PERMISSION_MODE</key>
     <string>bypassPermissions</string>
   </dict>

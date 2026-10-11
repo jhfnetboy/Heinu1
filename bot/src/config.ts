@@ -1,6 +1,12 @@
 import path from 'path';
 import os from 'os';
 
+export type AgentProvider = 'codex' | 'claude';
+const provider = process.env.AGENT_PROVIDER || 'codex';
+if (provider !== 'codex' && provider !== 'claude') {
+  throw new Error(`Unsupported AGENT_PROVIDER: ${provider}`);
+}
+
 export const CONFIG = {
   DATA_DIR:        path.join(os.homedir(), '.heinu1-bot'),
   TOKEN_FILE:      path.join(os.homedir(), '.heinu1-bot', 'token.json'),
@@ -30,6 +36,13 @@ export const CONFIG = {
   WATCHDOG_TIMEOUT_MS: Number(process.env.WATCHDOG_TIMEOUT_MS) || 180_000,
   WATCHDOG_CHECK_MS:   Number(process.env.WATCHDOG_CHECK_MS)   || 30_000,
   TURN_TIMEOUT_MS:    30_000,   // 30s silence = turn complete, start executing
+
+  AGENT_PROVIDER: provider as AgentProvider,
+  CODEX_BIN: process.env.CODEX_BIN || 'codex',
+  // Inherit the locally configured model unless explicitly overridden for the bot.
+  CODEX_MODEL: process.env.CODEX_MODEL || '',
+  CODEX_SANDBOX_MODE: process.env.CODEX_SANDBOX_MODE || 'danger-full-access',
+  CODEX_APPROVAL_POLICY: 'never', // headless WeChat tasks cannot answer CLI approval prompts
 
   CLAUDE_BIN:             process.env.CLAUDE_BIN || 'claude',
   CLAUDE_MODEL:           process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',

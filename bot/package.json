@@ -1,14 +1,16 @@
 {
   "name": "heinu1-wechat-bot",
   "version": "1.0.0",
-  "description": "WeChat iLink → Claude Code bridge for home laptop",
+  "description": "WeChat iLink → Codex bridge with optional Claude Code backend",
   "type": "commonjs",
   "scripts": {
     "start":   "tsx src/main.ts",
     "relogin": "tsx src/main.ts --relogin",
     "logs":    "tail -f ~/.heinu1-bot/bot.log",
     "setup":   "bash setup.sh",
-    "ws":      "tsx src/cli.ts"
+    "ws":      "tsx src/cli.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "smoke:codex": "tsx tests/codex-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.10.0",

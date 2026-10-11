@@ -1,13 +1,12 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Read `AGENTS.md` first: it is the current provider-neutral project guidance. Codex is the default; Claude is an optional fallback. The Claude CLI details below describe that fallback.
 
 ## What this is
 
-Heinu1 bridges WeChat to a local Claude Code CLI. A long-running daemon (`bot/`) receives WeChat
-messages over Tencent's official **iLink Bot API** and, for each non-command message, spawns the
-`claude` CLI as a subprocess in a configured workspace directory, streams its output back, and
-replies to the user in WeChat. The user controls a home laptop's Claude Code from their phone.
+Heinu1 bridges WeChat to the local Codex CLI by default (optional Claude fallback).
+The daemon receives messages through Tencent's official iLink API, runs the CLI in the
+selected workspace and replies with the final summary. See `AGENTS.md` for current rules.
 
 All real code lives in `bot/`. The `libs/` tree is git submodules of reference projects only —
 never edit them; they exist for protocol research (`docs/wechat-bot-research.md` is the canonical
@@ -15,7 +14,7 @@ iLink protocol write-up).
 
 ## Commands
 
-Run everything from `bot/`. There is **no build, lint, or test suite** — TypeScript runs directly
+Run everything from `bot/`. There is no build or lint step; run `npm test` for the runner/session suite — TypeScript runs directly
 via `tsx` (CommonJS, `strict: true`).
 
 ```bash
@@ -37,16 +36,14 @@ launchctl list | grep heinu1
 ## Architecture
 
 ### Two-process model
-The daemon never embeds Claude — it shells out. `claude/runner.ts` does
-`spawn("claude", ["--print", prompt, "--output-format", "stream-json", "--verbose",
-"--permission-mode", <mode>, "--resume", <sessionId>?, "--add-dir", <dir>?], { cwd })` and parses
-the JSONL event stream line-by-line: `system/init` → captures `session_id`; `assistant` content
-blocks → `text` / `tool_use`; `result` → final summary + cost. The captured `session_id` is what
-makes `--resume` work across messages — Claude Code holds the real conversation state, not us.
+`agent/runner.ts` dispatches to the configured CLI. `codex/runner.ts` runs `codex exec --json -`
+with stdin prompts and `resume <thread-id> -` for later turns. `thread.started` captures the
+thread ID, item events provide text/tools, and `turn.completed` finalizes the last agent message.
+`claude/runner.ts` retains the legacy Claude stream-json integration for explicit fallback.
 
 ### Message flow
 `main.ts` wires the pieces: `Monitor` long-polls iLink → `Router.handle()` → either `handleCommand`
-(text starts with `/`) or `runTask` → `runClaude` → `Sender` posts the reply. `Sender` chunks
+(text starts with `/`) or `runTask` → `runAgent` → `Sender` posts the reply. `Sender` chunks
 replies at `MAX_MSG_LEN` (1800) and best-effort sends a typing indicator first.
 
 ### iLink protocol layer (`bot/src/ilink/`)
@@ -55,7 +52,7 @@ replies at `MAX_MSG_LEN` (1800) and best-effort sends a typing indicator first.
   not the default domain. The token + baseurl are persisted to `~/.heinu1-bot/token.json` (mode 600).
 - The poll loop treats timeouts as normal (re-poll immediately) and reconnects after other errors.
   A fatal monitor error exits the process so launchd restarts it (and re-triggers QR login on an
-  expired session). `KeepAlive.SuccessfulExit=false` means a clean exit (code 0) does NOT restart.
+  expired session). `KeepAlive=true` restarts even after clean exits; use `ctl.sh autostart off` to stop.
 - Enum values in `types.ts` (MessageType, MessageState, MessageItemType) are copied verbatim from a
   reference SDK — treat them as ground truth, don't "clean them up".
 
@@ -65,10 +62,10 @@ replies at `MAX_MSG_LEN` (1800) and best-effort sends a typing indicator first.
   This state is lost on restart; sessions are recovered from SQLite via `getLatest`.
 - **Workspaces** (`workspace.ts`, `~/.heinu1-bot/workspaces.json`): a named map of
   `name → { path, description, extra_dirs? }` plus a `default`. `WorkspaceManager` tracks each
-  user's *current* workspace in memory. Switching workspace changes the `cwd` passed to `claude`
+  user's *current* workspace in memory. Switching workspace changes the `cwd` passed to the CLI
   AND clears the active session so the new workspace's last session resumes (or starts fresh).
 - **Sessions** (`claude/store.ts`, `~/.heinu1-bot/sessions.db`, better-sqlite3): scoped by
-  `(user_openid, workspace)`. Includes a runtime migration that `ALTER TABLE`s in the `workspace`
+  `(user_openid, workspace, provider)`. Includes a runtime migration that `ALTER TABLE`s in the `workspace`
   column on old DBs. `/sessions` and `/resume <n>` index into the per-workspace `last_used` list.
 
 ### Knowledge base ingest
@@ -83,20 +80,18 @@ never ingested (prevents chat noise polluting the KB). See `bot/CLAUDE.md` for t
 breakdown and `docs/kb-system-plan.md` / `docs/agent-reach-integration.md` for design detail.
 
 ### Configuration
-`config.ts` centralizes paths (all under `~/.heinu1-bot/`) and reads env vars set in the launchd
-plist: `CLAUDE_PERMISSION_MODE` (default `bypassPermissions`), `CLAUDE_BIN` (default `claude`),
-`CLAUDE_MODEL` (default `claude-sonnet-4-6`, bot-only — does not affect interactive `claude` CLI
-usage), and `MEMPALACE_PYTHON` (default `~/.mempalace/venv/bin/python`). `start.sh` exists to give
-launchd a sane PATH (Homebrew/nvm/Volta) since it runs with a minimal environment; proxy exports
-are present but commented out (uncomment if operating from behind a firewall).
+`config.ts` reads `AGENT_PROVIDER` (default `codex`), `CODEX_BIN`, `CODEX_MODEL` (unset = local
+model), and `CODEX_SANDBOX_MODE` (default `danger-full-access`). Codex uses `approval_policy=never`.
+`CLAUDE_BIN`, `CLAUDE_MODEL` and `CLAUDE_PERMISSION_MODE` apply only to the Claude fallback.
+`MEMPALACE_PYTHON` defaults to `~/.mempalace/venv/bin/python`. `start.sh` provides launchd's PATH.
 
 ## Gotchas
 - `bot/launchd/com.heinu1.wechat-bot.plist` is a template containing `__BOT_DIR__` / `__HOME__`;
   `setup.sh` renders it with the real paths into `~/Library/LaunchAgents/`. Editing the rendered
-  copy is what takes effect — re-run `setup.sh` (or `ctl.sh autostart off && on`) after changes.
+  copy is what takes effect — render/install the updated template, then run `ctl.sh autostart off` and `ctl.sh autostart on`.
 - `bot/ctl.sh` is the start/stop entry point (`start|stop|restart|status|logs|fg` plus
   `autostart on|off|status`). Only one machine may run the bot at a time; deployment runbook for
   the always-on Mac mini is `docs/DEPLOY-MACMINI.md`.
 - The WeChat-facing command set (`/ws`, `/new`, `/sessions`, `/resume`, `/status`, `/help`) is
   defined entirely in `router.ts`'s `handleCommand`/`handleWs`. `/stop` works: it calls
-  `AbortController.abort()`, which kills the `claude` subprocess via the `signal` option on `spawn`.
+  `AbortController.abort()`, which kills Codex and its tool process group (or the Claude subprocess in fallback mode).
