@@ -192,6 +192,8 @@ test('/stop kills a command child as well as the Codex process', async () => {
 test('auto routing uses Luna for read-only replies and Sol before research/publishing; manual choice wins', () => {
   const prefs={provider:'codex' as const,codexModel:'gpt-6-luna',reasoningEffort:'medium',modelRouting:'auto' as const};
   assert.equal(planTask('只回答当前状态，不要发布',prefs).model,'gpt-6-luna');
+  assert.equal(planTask('现在用哪个模型？',prefs).model,'gpt-6-luna');
+  assert.equal(planTask('帮我修复微信机器人',prefs).publish,false);
   assert.equal(planTask('https://github.com/example/project',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('深入研究模型架构，先不要发布',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('直接收到的文字素材',prefs).publish,true);
@@ -221,6 +223,7 @@ test('publication jobs dedup and ingest before CLI, persist partial failure, the
     const reopen=new SessionStore(file,'codex');try {assert.equal(reopen.failedJobs('user')[0].id,job.id);} finally {reopen.close();}
     await (router as any).runTask('user',prompt,ctx,job.id);
     assert.equal(store.job(job.id)?.status,'complete');assert.equal(store.job(job.id)?.attempts,2);
+    assert.equal((router as any).lastFailed.has('user'),false);
     const calls=fs.readFileSync(log,'utf8').trim().split('\n').map(x=>JSON.parse(x));
     assert(calls[0].args.includes('gpt-6.1-sol'));assert(calls[1].args.includes('resume'));
     assert(calls[0].input.includes('写作前查重'));assert(calls[1].input.includes('只补缺失步骤'));
@@ -242,5 +245,29 @@ test('KB failure blocks writing and keeps complete content for retry', async () 
     store.updateJob(job.id,{next_retry:0});assert.equal(store.failedJobs('user',true).length,1);
     for (let i=0;i<2;i++){assert(store.claimJob(job.id));store.updateJob(job.id,{status:'failed'});}
     assert.equal(store.failedJobs('user',true).length,0); // three attempts, retained for manual retry
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
+});
+
+test('received messages survive a crash during turn buffering, dedup redelivery, and attach atomically to a job', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;CONFIG.WORKSPACES_FILE=path.join(dir,'inbox-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const file=path.join(dir,'inbox.db');let store=new SessionStore(file,'codex');
+  const sender={send:async()=>{},sendTyping:async()=>{}} as unknown as Sender;
+  const message={message_id:42,from_user_id:'user',context_token:'test',item_list:[{type:1,text_item:{text:'incoming content'}}]} as WeixinMessage;
+  const first=new Router(sender,store,new WorkspaceManager());
+  try {
+    await first.handle(message);
+    const receipt=store.pendingInbox()[0];assert(receipt);
+    clearTimeout((first as any).turns.get('user').timer);(first as any).turns.clear();store.close();
+    store=new SessionStore(file,'codex');const restarted=new Router(sender,store,new WorkspaceManager());
+    await (restarted as any).restoreInbox();
+    assert.equal((restarted as any).turns.get('user').items[0].text,'incoming content');
+    await restarted.handle(message);
+    assert.equal((restarted as any).turns.get('user').items.length,1);
+    const context={rawText:'incoming content',rawPaths:[],urls:[],hasMedia:false};
+    store.createJob('durable','user','blog','incoming content',context,[receipt.id]);
+    assert.equal(store.pendingInbox().length,0);
+    store.recoverInterruptedJobs();assert.equal(store.failedJobs('user')[0].id,'durable');
+    await restarted.handle({...message,item_list:[{type:1,text_item:{text:'/stop'}}]});
   } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
 });

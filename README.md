@@ -213,7 +213,7 @@ Bot：（抓取正文 → 总结 → 回复）
 
 **存在哪：** 全局 MemPalace —— `~/.mempalace/palace`（wing 为 `heinu1`），供这台机器上的 coding agent 会话共用，不是 Bot 私有的小 SQLite。原始图片文件仍按日期归档在 `~/.heinu1-bot/kb/raw/`。
 
-**依赖：** 需要本机装好 MemPalace，默认走 `~/.mempalace/venv/bin/python`。venv 在别处就设环境变量：
+**依赖：** 需要本机装好 MemPalace，优先使用 pipx 安装的当前 MemPalace Python（`~/Library/Application Support/pipx/venvs/mempalace/bin/python`）。venv 在别处就设环境变量：
 
 ```bash
 export MEMPALACE_PYTHON=/path/to/venv/bin/python
@@ -474,3 +474,5 @@ Body: {
 默认自动路由：日常 Luna Medium；复杂研究或三件套在开始执行前自动用 Sol Medium。`/model auto` 恢复自动路由，显式指定模型则固定使用该模型。后端仍通过 `/backend` 手动切换。
 
 失败任务的完整素材与执行状态存 SQLite；重启后恢复，自动最多尝试三次，额度/登录失败延后重试。每次恢复先核对旧记录，只补未完成环节。`/jobs` 查看失败，`/retry all` 重试自己的失败任务，`/stop` 取消当前任务。只在 KB、banner、Blog URL 和公众号 media ID 均核验后报告完成。
+
+消息在收到时就持久化，30 秒收集阶段重启也能恢复；已投递的同一消息 ID 不会重复创建任务。

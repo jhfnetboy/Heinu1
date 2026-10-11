@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { WeixinMessage, MessageItem, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
@@ -50,6 +50,7 @@ const HELP = (provider: AgentProvider) => `🦞 ${agentLabel(provider)} 微信�
 // ── Turn buffer types ─────────────────────────────────────────────────────────
 
 interface TurnItem {
+  receiptId?: string;
   type:           MessageItemType;
   text?:          string;       // TEXT body or VOICE transcription
   fileName?:      string;       // FILE original name
@@ -93,11 +94,28 @@ export class Router {
 
   startRecovery() {
     this.store.recoverInterruptedJobs();
-    this.retryTimer=setInterval(()=>{ this.retryFailed().catch(err=>console.error('[retry]',err.message)); },60_000);
+    const recover=()=>this.restoreInbox().then(()=>this.retryFailed()).catch(err=>console.error('[retry]',err.message));
+    this.retryTimer=setInterval(recover,60_000);
     this.retryTimer.unref();
-    this.retryFailed().catch(err=>console.error('[retry]',err.message));
+    recover();
   }
   stopRecovery() { if (this.retryTimer) clearInterval(this.retryTimer); }
+  private async restoreInbox() {
+    const groups=new Map<string,ReturnType<SessionStore['pendingInbox']>>();
+    for (const receipt of this.store.pendingInbox()) {
+      const key=receipt.user_openid+'\0'+receipt.workspace;
+      const group=groups.get(key) ?? [];group.push(receipt);groups.set(key,group);
+    }
+    for (const receipts of groups.values()) {
+      const first=receipts[0];const user=first.user_openid;
+      if (this.running.has(user)||this.turns.has(user)||this.queued.has(user))continue;
+      if (this.wsm.currentName(user)!==first.workspace) {
+        if (this.wsm.switch(user,first.workspace))continue;
+        this.activeSession.delete(user);
+      }
+      for (const receipt of receipts) await this.addToTurn(user,JSON.parse(receipt.items_json),receipt.id);
+    }
+  }
   private async retryFailed(user?:string, manual=false) {
     for (const job of this.store.failedJobs(user,!manual)) {
       if (this.running.has(job.user_openid) || this.turns.has(job.user_openid) || this.queued.has(job.user_openid)) continue;
@@ -130,13 +148,17 @@ export class Router {
     }
 
     // All other messages (text, image, voice, file, video) accumulate in the turn
-    await this.addToTurn(userId, items);
+    const receiptId=Number.isFinite(msg.message_id)
+      ? createHash('sha256').update(`${userId}:${msg.message_id}`).digest('hex') : randomUUID();
+    if (!this.store.receive(receiptId,userId,this.wsm.currentName(userId),items)) return;
+    await this.addToTurn(userId, items,receiptId);
   }
 
   // ── Turn buffer ───────────────────────────────────────────────────────────
 
-  private async addToTurn(userId: string, msgItems: MessageItem[]) {
+  private async addToTurn(userId: string, msgItems: MessageItem[],receiptId?:string) {
     const newItems = this.toTurnItems(msgItems);
+    for (const item of newItems)item.receiptId=receiptId;
     if (!newItems.length) return;
 
     const existing = this.turns.get(userId);
@@ -210,7 +232,7 @@ export class Router {
     await this.downloadTurnMedia(userId, turn.items);
 
     const prompt = this.buildTurnPrompt(turn.items);
-    await this.runTask(userId, prompt, this.buildKbContext(turn.items));
+    await this.runTask(userId, prompt, this.buildKbContext(turn.items),undefined,this.receiptIds(turn.items));
   }
 
   private async runQueued(userId: string) {
@@ -220,15 +242,11 @@ export class Router {
     await this.reply(userId, `🔄 继续处理队列消息 (${this.describeTurnItems(items)})...`);
     await this.downloadTurnMedia(userId, items);
     const prompt = this.buildTurnPrompt(items);
-    await this.runTask(userId, prompt, this.buildKbContext(items));
+    await this.runTask(userId, prompt, this.buildKbContext(items),undefined,this.receiptIds(items));
   }
+  private receiptIds(items:TurnItem[]) {return [...new Set(items.flatMap(item=>item.receiptId ? [item.receiptId] : []))];}
 
-  /**
-   * A turn is ingest-worthy when it carries media (image/file/video) OR its
-   * text contains a URL (XiaoHongShu / 公众号 / web article → fetched via
-   * agent-reach). Plain text with no URL stays as normal chat so the KB isn't
-   * polluted with conversation.
-   */
+  /** All non-command turns retain their original text/media for KB and retries. */
   private buildKbContext(items: TurnItem[]): KbContext | null {
     const rawPaths = items
       .filter(i => i.localPath &&
@@ -344,6 +362,7 @@ export class Router {
     const turn = this.turns.get(userId);
     if (!turn) return false;
     clearTimeout(turn.timer);
+    this.store.cancelInbox(this.receiptIds(turn.items));
     this.turns.delete(userId);
     return true;
   }
@@ -473,6 +492,7 @@ export class Router {
           (prefs.provider === 'codex' ? `推理强度: ${prefs.reasoningEffort}\n` : '') +
           (prefs.provider === 'codex' ? `模型路由: ${prefs.modelRouting==='auto' ? '自动升级研究/发布任务' : '手动固定'}\n` : '') +
           (this.taskModels.has(userId) ? `当前任务模型: ${this.taskModels.get(userId)}\n` : '') +
+          (this.store.failedJobs(userId).length ? `待补齐任务: ${this.store.failedJobs(userId).length}（/jobs 查看）\n` : '') +
           `工作区: ${ws} (${wsDef.path})\n` +
           (turn    ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
           (queue   ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
@@ -513,6 +533,8 @@ export class Router {
       case '/stop': {
         const msgs: string[] = [];
         if (this.cancelPendingTurn(userId)) msgs.push('消息收集轮次已取消');
+        const queue=this.queued.get(userId);
+        if (queue) this.store.cancelInbox(this.receiptIds(queue));
         if (this.queued.delete(userId))     msgs.push('队列已清空');
         const aborter = this.aborts.get(userId);
         if (this.running.has(userId) && aborter) {
@@ -574,7 +596,7 @@ export class Router {
     }
 
     // /ws <name> → switch
-    if (this.running.has(userId)) {
+    if (this.running.has(userId) || this.turns.has(userId) || this.queued.has(userId)) {
       await this.reply(userId, '⏳ 有任务运行中，等完成后再切换工作区'); return;
     }
     const name = args[0];
@@ -657,14 +679,14 @@ export class Router {
 
   // ── Task runner ───────────────────────────────────────────────────────────
 
-  private async runTask(userId: string, prompt: string, kbCtx: KbContext | null = null, retryId?:string) {
+  private async runTask(userId: string, prompt: string, kbCtx: KbContext | null = null, retryId?:string,receipts:string[]=[]) {
     if (this.running.has(userId)) {
       await this.reply(userId, '⏳ 上一个任务还在运行（/status 查看）');
       return;
     }
     const prefs = this.store.preferences(userId);
     const plan=planTask(prompt,prefs);
-    const job = retryId ? this.store.job(retryId) : kbCtx ? this.store.createJob(randomUUID(),userId,this.wsm.currentName(userId),prompt,kbCtx) : undefined;
+    const job = retryId ? this.store.job(retryId) : kbCtx ? this.store.createJob(randomUUID(),userId,this.wsm.currentName(userId),prompt,kbCtx,receipts) : undefined;
     if (job && !this.store.claimJob(job.id)) return;
     this.running.add(userId);
     const aborter = new AbortController();
@@ -806,6 +828,7 @@ export class Router {
         displaySource=stripPublication(displaySource);
       }
       if (job) this.store.updateJob(job.id,{status:'complete',error:'',next_retry:0});
+      this.lastFailed.delete(userId);
 
       let body: string;
       if (displaySource.trim()) {

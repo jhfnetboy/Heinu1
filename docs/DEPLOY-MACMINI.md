@@ -181,7 +181,7 @@ export ALL_PROXY="socks5://127.0.0.1:7890"
 这台机器上要能用，需要有 MemPalace 的 venv：
 
 ```bash
-ls ~/.mempalace/venv/bin/python    # 有就不用管
+ls "$HOME/Library/Application Support/pipx/venvs/mempalace/bin/python"    # 有就不用管
 ```
 
 没有的话，按 `mempalace` 项目的说明装好，或者用环境变量指到别的解释器：

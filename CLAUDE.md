@@ -83,7 +83,7 @@ breakdown and `docs/kb-system-plan.md` / `docs/agent-reach-integration.md` for d
 `config.ts` reads `AGENT_PROVIDER` (default `codex`), `CODEX_BIN`, `CODEX_MODEL` (launchd template = gpt-6-luna; unset = local
 model), `CODEX_REASONING_EFFORT` (medium), and `CODEX_SANDBOX_MODE` (default `danger-full-access`). Codex uses `approval_policy=never`.
 `CLAUDE_BIN`, `CLAUDE_MODEL` and `CLAUDE_PERMISSION_MODE` apply only to the Claude fallback.
-`MEMPALACE_PYTHON` defaults to `~/.mempalace/venv/bin/python`. `start.sh` provides launchd's PATH.
+`MEMPALACE_PYTHON` prefers the current pipx MemPalace environment, with an explicit override available. `start.sh` provides launchd's PATH.
 
 ## Gotchas
 - `bot/launchd/com.heinu1.wechat-bot.plist` is a template containing `__BOT_DIR__` / `__HOME__`;

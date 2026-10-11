@@ -27,6 +27,9 @@ export interface WorkflowJob {
   next_retry: number; created_at: number; session_uuid: string; provider: AgentProvider;
   kb_confirmed: number; result_json: string;
 }
+export interface InboxReceipt {
+  id:string;user_openid:string;workspace:string;items_json:string;
+}
 
 export class SessionStore {
   private db: Database.Database;
@@ -70,6 +73,11 @@ export class SessionStore {
       next_retry INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
       session_uuid TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT 'codex',
       kb_confirmed INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL DEFAULT ''
+    )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS message_inbox (
+      id TEXT PRIMARY KEY,user_openid TEXT NOT NULL,workspace TEXT NOT NULL,
+      items_json TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'received',
+      job_id TEXT NOT NULL DEFAULT '',received_at INTEGER NOT NULL
     )`);
   }
 
@@ -133,10 +141,13 @@ export class SessionStore {
       .run(userOpenid,prefs.provider,prefs.codexModel,prefs.reasoningEffort,prefs.modelRouting);
   }
 
-  createJob(id:string,user:string,workspace:string,prompt:string,context:unknown) {
-    this.db.prepare(`INSERT OR IGNORE INTO workflow_jobs (id,user_openid,workspace,prompt,context_json,status,created_at)
-      VALUES (?,?,?,?,?,'pending',?)`).run(id,user,workspace,prompt,JSON.stringify(context),Date.now());
-    return this.job(id)!;
+  createJob(id:string,user:string,workspace:string,prompt:string,context:unknown,receipts:string[]=[]) {
+    return this.db.transaction(()=>{
+      this.db.prepare(`INSERT OR IGNORE INTO workflow_jobs (id,user_openid,workspace,prompt,context_json,status,created_at)
+        VALUES (?,?,?,?,?,'pending',?)`).run(id,user,workspace,prompt,JSON.stringify(context),Date.now());
+      if (receipts.length) this.attachInbox(receipts,id);
+      return this.job(id)!;
+    })();
   }
   job(id:string) { return this.db.prepare('SELECT * FROM workflow_jobs WHERE id=?').get(id) as WorkflowJob|undefined; }
   failedJobs(user?:string, dueOnly=false): WorkflowJob[] {
@@ -153,6 +164,21 @@ export class SessionStore {
   }
   recoverInterruptedJobs() {
     this.db.prepare("UPDATE workflow_jobs SET status='failed',error='机器人重启，继续核对未完成步骤',next_retry=0 WHERE status IN ('running','pending')").run();
+  }
+  receive(id:string,user:string,workspace:string,items:unknown) {
+    return this.db.prepare('INSERT OR IGNORE INTO message_inbox (id,user_openid,workspace,items_json,received_at) VALUES (?,?,?,?,?)')
+      .run(id,user,workspace,JSON.stringify(items),Date.now()).changes>0;
+  }
+  pendingInbox():InboxReceipt[] {
+    return this.db.prepare("SELECT * FROM message_inbox WHERE status='received' ORDER BY received_at").all() as InboxReceipt[];
+  }
+  attachInbox(ids:string[],jobId:string) {
+    const stmt=this.db.prepare("UPDATE message_inbox SET status='attached',job_id=? WHERE id=? AND status='received'");
+    this.db.transaction(()=>{for (const id of new Set(ids))stmt.run(jobId,id);})();
+  }
+  cancelInbox(ids:string[]) {
+    const stmt=this.db.prepare("UPDATE message_inbox SET status='cancelled' WHERE id=? AND status='received'");
+    this.db.transaction(()=>{for (const id of new Set(ids))stmt.run(id);})();
   }
 
   close() { this.db.close(); }

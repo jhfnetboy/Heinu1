@@ -33,10 +33,10 @@ if _mp_src and _mp_src not in sys.path:
 
 from mempalace.config import MempalaceConfig
 from mempalace.mcp_server import tool_add_drawer
-
-import chromadb
+from mempalace.backends.chroma import ChromaBackend
 
 _config = MempalaceConfig()
+_backend = ChromaBackend()
 
 WING = "heinu1"
 
@@ -44,8 +44,8 @@ WING = "heinu1"
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _get_collection():
-    client = chromadb.PersistentClient(path=_config.palace_path)
-    return client.get_collection(_config.collection_name)
+    # Share MemPalace's writer lock and freshness handling with its CLI/MCP writers.
+    return _backend.get_collection(_config.palace_path, _config.collection_name, False)
 
 
 def _parse_record_content(content: str, drawer_id: str, meta: dict) -> dict:

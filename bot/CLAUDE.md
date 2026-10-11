@@ -56,10 +56,10 @@ Heinu1 no longer maintains a local SQLite KB. All ingested records go into the g
 
 **How it works:**
 1. `MempalaceStore` (`kb/mempalace-store.ts`) provides the same `insert / search / recent / get / count` API as the old `KbStore`
-2. Each call shells out to `scripts/mp_bridge.py` via `execFileSync`, using `CONFIG.MEMPALACE_PYTHON` (`~/.mempalace/venv/bin/python` by default)
+2. Each call shells out to `scripts/mp_bridge.py` via `execFileSync`, using `CONFIG.MEMPALACE_PYTHON` (current pipx MemPalace Python preferred)
 3. The bridge imports the `mempalace` package from the venv and calls `tool_add_drawer` / `tool_search` / ChromaDB queries
 4. Integer IDs shown by `/kb` are assigned in-memory by `localId(drawerId)` and are **stable within a process** — `recent()` and `search()` both go through `hydrate()`, so the same drawer gets the same number in both listings and `/kb <id>` resolves either way. They reset on daemon restart; users run `/kb` to get fresh IDs.
-5. `search` queries ChromaDB directly in `mp_bridge.py` rather than via mempalace's `search_memories()`, because that helper drops the drawer ids — without an id a hit could not be opened with `/kb <id>`
+5. `search` queries through the current MemPalace backend in `mp_bridge.py` rather than via mempalace's `search_memories()`, because that helper drops the drawer ids — without an id a hit could not be opened with `/kb <id>`
 
 **Files no longer used:** `kb/store.ts` (old SQLite class) is kept for the `KbRecord` / `KbDraft` type exports only; `CONFIG.KB_DB_FILE` has been removed.
 

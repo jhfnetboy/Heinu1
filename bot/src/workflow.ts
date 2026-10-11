@@ -6,7 +6,9 @@ import { AgentPreferences } from './claude/store';
 
 export function planTask(prompt: string, prefs: AgentPreferences) {
   // Slash commands bypass this path. Explicit task constraints always win.
-  const noPublish = /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢)[！!。\s]*$/i.test(prompt);
+  const source = /https?:\/\/|\[(?:图片|文件|视频):/i.test(prompt);
+  const routine = !source && /^(?:(?:你|机器人|现在|当前).{0,15}(?:什么|哪个|哪种).{0,6}(?:模型|后端|工作区)|(?:帮我|请)?(?:切换|设置|修改|重启|停止).{0,15}(?:机器人|默认模型|后端|服务|工作区)|(?:帮我|请)?修复.{0,10}(?:机器人|服务))/i.test(prompt.trim());
+  const noPublish = routine || /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢|hi|hello|thanks)[！!。\s]*$/i.test(prompt);
   const research = /深度|深入|复杂|研究|调研|比较|评测|排查|修复|research|investigate/i.test(prompt);
   const publish = !noPublish;
   const upgrade = prefs.modelRouting === 'auto' && (publish || research);
@@ -63,8 +65,12 @@ export async function verifyPublication(text: string) {
   if (!hero || !fs.existsSync(path.resolve(path.dirname(md),hero))) throw new Error('文章 banner 缺失');
   const record=JSON.parse(fs.readFileSync(path.join(root,'pipeline/m2/output',data.slug+'.json'),'utf8'));
   if (!data.mediaId || (record.mediaId ?? record.media_id)!==data.mediaId) throw new Error('公众号草稿记录未核验');
-  const res=await fetch(url,{method:'HEAD',signal:AbortSignal.timeout(15_000)});
+  const res=await fetch(url,{signal:AbortSignal.timeout(15_000)});
   if (!res.ok) throw new Error(`Blog 未上线：HTTP ${res.status}`);
+  const html=await res.text();
+  const og=html.match(/<meta\b[^>]*(?:property|name)=["']og:image["'][^>]*>/i)?.[0] ?? '';
+  const stem=path.basename(hero,path.extname(hero));
+  if (!og.includes(stem)) throw new Error('线上 Blog 封面与最终文章 banner 不符');
   return {slug:data.slug,blogUrl:url,mediaId:data.mediaId,banner:hero};
 }
 
