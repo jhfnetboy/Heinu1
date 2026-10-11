@@ -31,6 +31,7 @@ async function main() {
   console.log(`   数据目录: ${CONFIG.DATA_DIR}`);
   console.log(`   执行后端: ${AGENT_LABEL}`);
   console.log(`   模型: ${CONFIG.AGENT_PROVIDER === 'codex' ? CONFIG.CODEX_MODEL || '继承 Codex 本机配置' : CONFIG.CLAUDE_MODEL}`);
+  if (CONFIG.AGENT_PROVIDER === 'codex') console.log(`   推理强度: ${CONFIG.CODEX_REASONING_EFFORT}`);
   console.log(`   权限模式: ${CONFIG.AGENT_PROVIDER === 'codex' ? CONFIG.CODEX_SANDBOX_MODE : CONFIG.CLAUDE_PERMISSION_MODE}\n`);
 
   fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });

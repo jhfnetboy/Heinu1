@@ -65,6 +65,12 @@ Heinu1 no longer maintains a local SQLite KB. All ingested records go into the g
 
 **Env override:** `MEMPALACE_PYTHON=/path/to/python` to use a different venv.
 
+## Provider and model selection
+
+`/backend codex|claude` and `/model luna|terra|sol [medium]` persist per-user selections in the
+`agent_preferences` table. All router session lookups pass the selected provider explicitly;
+never mutate global CONFIG to switch a user. See `../AGENTS.md` for current defaults.
+
 ## Claude JSONL stream format
 
 `runClaude` in `claude/runner.ts` processes these event types from `claude --output-format stream-json --verbose`:

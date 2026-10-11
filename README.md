@@ -278,7 +278,7 @@ npm run relogin         # 清除 token，重新扫码
 
 ## 执行后端与权限
 
-默认 `AGENT_PROVIDER=codex`，调用本机已登录的 Codex。`CODEX_MODEL` 未设置时继承本机 Codex 配置；设置后只覆盖机器人任务。
+默认 `AGENT_PROVIDER=codex`，调用本机已登录的 Codex。部署模板使用 `gpt-6-luna`、`medium`；`CODEX_MODEL` 未设置的手动运行仍继承本机模型。设置只覆盖机器人任务。
 
 在 `bot/launchd/com.heinu1.wechat-bot.plist` 模板或已安装的 `~/Library/LaunchAgents/com.heinu1.wechat-bot.plist` 调整，已安装服务需要 `./ctl.sh autostart off` 再 `./ctl.sh autostart on` 重载。
 
@@ -286,12 +286,28 @@ npm run relogin         # 清除 token，重新扫码
 |---|---|---|
 | `AGENT_PROVIDER` | `codex` | 可设 `claude` 回退到原后端 |
 | `CODEX_BIN` | `codex` | CLI 路径 |
-| `CODEX_MODEL` | 未设置 | 继承本机模型 |
+| `CODEX_MODEL` | 部署模板 `gpt-6-luna` | 未设置时继承本机模型 |
+| `CODEX_REASONING_EFFORT` | `medium` | Codex 推理强度 |
 | `CODEX_SANDBOX_MODE` | `danger-full-access` | 延续机主全自动执行权限；也支持 `workspace-write`、`read-only` |
 
 Codex 无人值守任务使用 `approval_policy=never`。Claude 回退仍支持 `CLAUDE_BIN`、`CLAUDE_MODEL` 和 `CLAUDE_PERMISSION_MODE`。
 
 旧 Claude 会话保留在数据库，按后端隔离。切到 Codex 后首次任务开启新会话，`/sessions` 和 `/resume` 只查看当前后端的历史。
+
+微信里显式切换，无需重启服务：
+
+```text
+/backend              查看当前后端
+/backend claude       改用 Claude Code
+/backend codex        改回 Codex
+/model luna medium    Codex 改用 GPT-6 Luna，medium
+/model terra medium   Codex 改用 GPT-5.6 Terra，medium
+/model sol medium     Codex 改用 GPT-6.1 Sol，medium
+/status               查看当前后端、模型、强度与工作区
+```
+
+选择按微信用户存 SQLite，重启后保留。切换后端会续接它自己的历史；模型切换继续当前 Codex 对话。任务执行、消息收集或队列未清空时会拒绝切换，先等完成或 `/stop`。Codex 额度不足时提示手动切换，避免自动重跑发布任务。Claude 也需要有效登录和剩余额度。
+
 
 ---
 

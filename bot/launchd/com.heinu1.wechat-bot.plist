@@ -39,6 +39,10 @@
     <string>__HOME__</string>
     <key>AGENT_PROVIDER</key>
     <string>codex</string>
+    <key>CODEX_MODEL</key>
+    <string>gpt-6-luna</string>
+    <key>CODEX_REASONING_EFFORT</key>
+    <string>medium</string>
     <!-- 与原先 Claude bypassPermissions 一致：机主自己的全自动任务 -->
     <key>CODEX_SANDBOX_MODE</key>
     <string>danger-full-access</string>

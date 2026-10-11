@@ -2,9 +2,9 @@ import { randomUUID } from 'crypto';
 import { WeixinMessage, MessageItem, MessageItemType } from './ilink/types';
 import { Sender } from './ilink/sender';
 import { SessionStore } from './claude/store';
-import { runAgent, RunEvent, AGENT_LABEL } from './agent/runner';
+import { runAgent, RunEvent, agentLabel } from './agent/runner';
 import { WorkspaceManager } from './workspace';
-import { CONFIG } from './config';
+import { CONFIG, AgentProvider } from './config';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 import { MempalaceStore } from './kb/mempalace-store';
 import {
@@ -12,9 +12,9 @@ import {
   archiveRawFiles, parseKbRecord, stripKbRecord, fallbackRecord,
 } from './kb/ingest';
 
-const HELP = `🦞 ${AGENT_LABEL} 微信机器人
+const HELP = (provider: AgentProvider) => `🦞 ${agentLabel(provider)} 微信机器人
 
-直接发消息 → ${AGENT_LABEL} 帮你干活
+直接发消息 → ${agentLabel(provider)} 帮你干活
 支持：文字、图片、语音、文件（含PDF）、视频
 
 ─ 会话命令 ─
@@ -24,6 +24,9 @@ const HELP = `🦞 ${AGENT_LABEL} 微信机器人
 /status       查看当前状态
 /retry        重试上次失败的任务
 /stop         停止任务或取消待发轮次
+/backend      查看执行后端
+/backend codex | claude  切换后端
+/model luna | terra | sol [medium]  设置 Codex 模型
 
 ─ 工作区命令 ─
 /ws                   列出全部工作区
@@ -334,7 +337,48 @@ export class Router {
 
     switch (cmd) {
       case '/help': {
-        await this.reply(userId, HELP);
+        await this.reply(userId, HELP(this.store.preferences(userId).provider));
+        break;
+      }
+
+      case '/backend': {
+        const prefs = this.store.preferences(userId);
+        const provider = parts[1]?.toLowerCase();
+        if (!provider) {
+          await this.reply(userId, `执行后端: ${agentLabel(prefs.provider)}\n/backend codex 或 /backend claude 切换。\n切换按用户保存；两个后端各自续接自己的会话。`);
+          break;
+        }
+        if (provider !== 'codex' && provider !== 'claude') {
+          await this.reply(userId, '用法: /backend codex 或 /backend claude'); break;
+        }
+        if (this.running.has(userId) || this.turns.has(userId) || this.queued.has(userId)) {
+          await this.reply(userId, '⏳ 有任务或消息待处理，请等完成或发 /stop 后再切换后端'); break;
+        }
+        if (provider !== prefs.provider) {
+          this.store.savePreferences(userId, {...prefs,provider});
+          this.activeSession.delete(userId);
+        }
+        await this.reply(userId, `✅ 执行后端: ${agentLabel(provider)}\n工作区: ${this.wsm.currentName(userId)}\n会话按后端独立保存，后续消息使用此后端。`);
+        break;
+      }
+
+      case '/model': {
+        const prefs = this.store.preferences(userId);
+        if (!parts[1]) {
+          await this.reply(userId, `Codex 模型: ${prefs.codexModel || '本机默认'}\n推理强度: ${prefs.reasoningEffort}\n/model luna | terra | sol [medium]`); break;
+        }
+        if (this.running.has(userId) || this.turns.has(userId) || this.queued.has(userId)) {
+          await this.reply(userId, '⏳ 有任务或消息待处理，请等完成或发 /stop 后再切换模型'); break;
+        }
+        const aliases: Record<string,string> = {luna:'gpt-6-luna',terra:'gpt-5.6-terra',sol:'gpt-6.1-sol'};
+        const model = aliases[parts[1].toLowerCase()] ?? parts[1];
+        const effort = parts[2]?.toLowerCase() ?? 'medium';
+        if (!/^gpt-[a-z0-9.-]+$/.test(model) || !['low','medium','high','xhigh','max'].includes(effort) || parts.length>3) {
+          await this.reply(userId, '用法: /model luna | terra | sol [low|medium|high|xhigh|max]'); break;
+        }
+        this.store.savePreferences(userId,{...prefs,codexModel:model,reasoningEffort:effort});
+        await this.reply(userId, `✅ Codex 模型: ${model}\n推理强度: ${effort}` +
+          (prefs.provider === 'claude' ? '\n当前使用 Claude Code；发 /backend codex 后生效。' : '\n下个任务生效，继续当前 Codex 会话。'));
         break;
       }
 
@@ -362,7 +406,8 @@ export class Router {
 
       case '/sessions': {
         const ws       = this.wsm.currentName(userId);
-        const sessions = this.store.list(userId, ws);
+        const provider = this.store.preferences(userId).provider;
+        const sessions = this.store.list(userId, ws, 10, provider);
         if (!sessions.length) {
           await this.reply(userId, `工作区 [${ws}] 暂无历史会话`); return;
         }
@@ -379,7 +424,7 @@ export class Router {
         }
         const ws      = this.wsm.currentName(userId);
         const n       = parseInt(parts[1] ?? '1', 10);
-        const session = this.store.getByIndex(userId, ws, n);
+        const session = this.store.getByIndex(userId, ws, n, this.store.preferences(userId).provider);
         if (!session) {
           await this.reply(userId, `❌ 找不到第 ${n} 个会话，发 /sessions 查看列表`); return;
         }
@@ -391,15 +436,17 @@ export class Router {
       case '/status': {
         const ws      = this.wsm.currentName(userId);
         const wsDef   = this.wsm.current(userId);
+        const prefs   = this.store.preferences(userId);
         const uuid    = this.activeSession.get(userId);
-        const session = uuid ? this.store.getByUuid(uuid) : undefined;
+        const session = uuid ? this.store.getByUuid(uuid, prefs.provider) : undefined;
         const turn    = this.turns.get(userId);
         const queue   = this.queued.get(userId);
         const failed  = this.lastFailed.get(userId);
         await this.reply(userId,
           `${this.running.has(userId) ? '🔄 运行中' : turn ? '⏳ 收集消息中' : '⏸ 空闲'}\n` +
-          `执行后端: ${AGENT_LABEL}\n` +
-          `模型: ${CONFIG.AGENT_PROVIDER === 'codex' ? CONFIG.CODEX_MODEL || 'Codex 本机默认' : CONFIG.CLAUDE_MODEL}\n` +
+          `执行后端: ${agentLabel(prefs.provider)}\n` +
+          `模型: ${prefs.provider === 'codex' ? prefs.codexModel || 'Codex 本机默认' : CONFIG.CLAUDE_MODEL}\n` +
+          (prefs.provider === 'codex' ? `推理强度: ${prefs.reasoningEffort}\n` : '') +
           `工作区: ${ws} (${wsDef.path})\n` +
           (turn    ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
           (queue   ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
@@ -495,7 +542,7 @@ export class Router {
 
     this.activeSession.delete(userId);
     const wsDef    = this.wsm.current(userId);
-    const lastSess = this.store.getLatest(userId, name);
+    const lastSess = this.store.getLatest(userId, name, this.store.preferences(userId).provider);
     if (lastSess) {
       this.activeSession.set(userId, lastSess.session_uuid);
       await this.reply(userId,
@@ -574,6 +621,7 @@ export class Router {
       await this.reply(userId, '⏳ 上一个任务还在运行（/status 查看）');
       return;
     }
+    const prefs = this.store.preferences(userId);
     this.running.add(userId);
     const aborter = new AbortController();
     this.aborts.set(userId, aborter);
@@ -608,7 +656,7 @@ export class Router {
 
       const existingUuid = this.activeSession.has(userId)
         ? this.activeSession.get(userId) ?? null
-        : this.store.getLatest(userId, wsName)?.session_uuid ?? null;
+        : this.store.getLatest(userId, wsName, prefs.provider)?.session_uuid ?? null;
       newSessionId = existingUuid;
 
       const finalSid = await runAgent(
@@ -618,6 +666,9 @@ export class Router {
           cwd:       wsDef.path,
           extraDirs: [...(wsDef.extra_dirs ?? []), CONFIG.MEDIA_DIR],
           signal:    aborter.signal,
+          provider:  prefs.provider,
+          codexModel: prefs.codexModel,
+          codexReasoningEffort: prefs.reasoningEffort,
         },
         (ev: RunEvent) => {
           switch (ev.type) {
@@ -634,11 +685,11 @@ export class Router {
       if (finalSid) newSessionId = finalSid;
 
       if (newSessionId) {
-        if (!this.store.getByUuid(newSessionId)) {
+        if (!this.store.getByUuid(newSessionId, prefs.provider)) {
           this.store.create(userId, wsName, newSessionId,
-            prompt.slice(0, 28) + (prompt.length > 28 ? '…' : ''));
+            prompt.slice(0, 28) + (prompt.length > 28 ? '…' : ''), prefs.provider);
         } else {
-          this.store.touch(newSessionId);
+          this.store.touch(newSessionId, prefs.provider);
         }
         this.activeSession.set(userId, newSessionId);
       }
@@ -702,11 +753,16 @@ export class Router {
       console.error('[router] error:', err.message);
       this.lastFailed.set(userId, prompt);
 
-      if (CONFIG.AGENT_PROVIDER === 'codex' && /unauthorized|authentication|not logged in|token.*expired|401/i.test(err.message)) {
+      if (/usage.?limit|weekly.?limit|rate.?limit|quota|credit|429/i.test(err.message)) {
+        const other = prefs.provider === 'codex' ? 'claude' : 'codex';
+        await this.reply(userId, `❌ ${agentLabel(prefs.provider)} 额度或调用限制：${err.message.slice(0,500)}\n可发 /backend ${other} 切换后端，再重新说明任务。`);
+        return;
+      }
+      if (prefs.provider === 'codex' && /unauthorized|authentication|not logged in|token.*expired|401/i.test(err.message)) {
         await this.reply(userId, '❌ Codex 登录失效，请在运行机器人的 Mac 用户下执行 codex login，再发 /retry。');
         return;
       }
-      if (CONFIG.AGENT_PROVIDER === 'claude' && isClaudeAuthError(err.message)) {
+      if (prefs.provider === 'claude' && isClaudeAuthError(err.message)) {
         // 机器人(launchd)优先读钥匙串里的 Claude 凭证；那条一旦坏掉(比如被写成空 token)
         // 就不会再退回读终端用的 ~/.claude/.credentials.json，终端重新登录也没用。
         await this.reply(userId,

@@ -1,4 +1,4 @@
-import { CONFIG } from '../config';
+import { CONFIG, AgentProvider } from '../config';
 import { runClaude } from '../claude/runner';
 import { runCodex } from '../codex/runner';
 
@@ -7,6 +7,9 @@ export interface RunOptions {
   cwd: string;
   extraDirs?: string[];
   signal?: AbortSignal;
+  provider?: AgentProvider;
+  codexModel?: string;
+  codexReasoningEffort?: string;
 }
 
 export interface RunEvent {
@@ -18,10 +21,13 @@ export interface RunEvent {
   costUsd?: number;
 }
 
-export const AGENT_LABEL = CONFIG.AGENT_PROVIDER === 'codex' ? 'Codex' : 'Claude Code';
+export function agentLabel(provider: AgentProvider) {
+  return provider === 'codex' ? 'Codex' : 'Claude Code';
+}
+export const AGENT_LABEL = agentLabel(CONFIG.AGENT_PROVIDER);
 
 export function runAgent(prompt: string, opts: RunOptions, onEvent: (ev: RunEvent) => void) {
-  return CONFIG.AGENT_PROVIDER === 'codex'
+  return (opts.provider ?? CONFIG.AGENT_PROVIDER) === 'codex'
     ? runCodex(prompt, opts, onEvent)
     : runClaude(prompt, opts, onEvent);
 }

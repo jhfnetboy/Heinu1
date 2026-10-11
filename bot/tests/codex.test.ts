@@ -96,6 +96,80 @@ test('WeChat /status identifies Codex, /new starts fresh, next task resumes the 
   } finally { CONFIG.WORKSPACES_FILE=wsFile; store.close(); }
 });
 
+test('explicit backend/model selection persists and routes isolated histories to the correct CLI', async () => {
+  const oldWs = CONFIG.WORKSPACES_FILE;
+  const oldClaude = CONFIG.CLAUDE_BIN;
+  CONFIG.WORKSPACES_FILE = path.join(dir,'backend-workspaces.json');
+  CONFIG.CLAUDE_BIN = path.join(__dirname,'fixtures/claude.cjs');
+  fs.chmodSync(CONFIG.CLAUDE_BIN,0o755);
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const file = path.join(dir,'backend.db');
+  const store = new SessionStore(file,'codex');
+  const replies: string[] = [];
+  const sender = {send:async (_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router = new Router(sender,store,new WorkspaceManager());
+  const message = (text:string,user='user')=>({from_user_id:user,context_token:'test',item_list:[{type:1,text_item:{text}}]} as WeixinMessage);
+  const log = path.join(dir,'backend.jsonl');
+  try {
+    store.create('user','blog','old-claude','CLAUDE_HISTORY','claude');
+    store.create('user','blog','old-codex','CODEX_HISTORY','codex');
+    await router.handle(message('/backend claude'));
+    await router.handle(message('/sessions'));
+    assert(replies.at(-1)?.includes('CLAUDE_HISTORY'));
+    assert(!replies.at(-1)?.includes('CODEX_HISTORY'));
+    await (router as any).runTask('user',JSON.stringify({log}));
+    assert(replies.at(-1)?.includes('CLAUDE_DONE'));
+    await router.handle(message('/backend codex'));
+    await router.handle(message('/model terra high'));
+    await (router as any).runTask('user',JSON.stringify({log}));
+    const calls = fs.readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+    assert.equal(calls[0].backend,'claude');
+    assert(calls[0].args.includes('old-claude'));
+    assert(calls[1].args.includes('old-codex'));
+    assert(!calls[1].args.includes('old-claude'));
+    assert(calls[1].args.includes('gpt-5.6-terra'));
+    assert(calls[1].args.includes('model_reasoning_effort="high"'));
+    assert.equal(store.preferences('other').provider,'codex');
+    assert.notEqual(store.preferences('other').codexModel,'gpt-5.6-terra');
+    const reopened = new SessionStore(file,'codex');
+    try { assert.deepEqual(reopened.preferences('user'),{provider:'codex',codexModel:'gpt-5.6-terra',reasoningEffort:'high'}); }
+    finally { reopened.close(); }
+    await router.handle(message('/backend unknown'));
+    assert.equal(store.preferences('user').provider,'codex');
+    await router.handle(message('/model luna medium'));
+    assert.equal(store.preferences('user').codexModel,'gpt-6-luna');
+    assert.equal(store.preferences('user').reasoningEffort,'medium');
+    await router.handle(message('/backend claude'));
+    await (router as any).runTask('user',JSON.stringify({mode:'quota',log}));
+    assert(replies.at(-1)?.includes('/backend codex'));
+  } finally { CONFIG.WORKSPACES_FILE=oldWs; CONFIG.CLAUDE_BIN=oldClaude; store.close(); }
+});
+
+test('pending messages block switching and Codex quota errors offer explicit fallback without replay', async () => {
+  const oldWs = CONFIG.WORKSPACES_FILE;
+  CONFIG.WORKSPACES_FILE=path.join(dir,'quota-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const store = new SessionStore(path.join(dir,'quota.db'),'codex');
+  const replies: string[] = [];
+  const sender = {send:async (_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router = new Router(sender,store,new WorkspaceManager());
+  const message = (text:string)=>({from_user_id:'user',context_token:'test',item_list:[{type:1,text_item:{text}}]} as WeixinMessage);
+  const log=path.join(dir,'quota.jsonl');
+  try {
+    await router.handle(message('pending task'));
+    await router.handle(message('/backend claude'));
+    assert.equal(store.preferences('user').provider,'codex');
+    assert(replies.at(-1)?.includes('/stop'));
+    await router.handle(message('/model terra high'));
+    assert.notEqual(store.preferences('user').codexModel,'gpt-5.6-terra');
+    await router.handle(message('/stop'));
+    await (router as any).runTask('user',JSON.stringify({mode:'quota',log}));
+    assert(replies.at(-1)?.includes('/backend claude'));
+    assert.equal(store.preferences('user').provider,'codex');
+    assert.equal(fs.readFileSync(log,'utf8').trim().split('\n').length,1);
+  } finally { CONFIG.WORKSPACES_FILE=oldWs; store.close(); }
+});
+
 test('/stop kills a command child as well as the Codex process', async () => {
   const controller = new AbortController();
   const pidFile = path.join(dir,'child.pid');

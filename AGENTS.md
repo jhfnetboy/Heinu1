@@ -8,8 +8,10 @@ Heinu1 receives WeChat messages through Tencent's official iLink API and runs a 
 - Run `npm test` and `npx tsc --noEmit` from `bot/` for runner/session changes. `npm run smoke:codex` checks real authenticated Codex execution, file writes and conversation resume without sending WeChat messages.
 - `agent/runner.ts` dispatches to `codex/runner.ts` or `claude/runner.ts`. Codex runs `codex exec --json` with the prompt over stdin; subsequent turns use `codex exec resume <thread-id> -`. Parse `thread.started`, tool items, agent messages and terminal turn events.
 - Session storage remains at `src/claude/store.ts` for compatibility. SQLite sessions are scoped by `(user_openid, workspace, provider)`. Legacy rows migrate to `provider=claude`. Never pass a Claude UUID to Codex or delete old history during backend switches.
-- Default `CODEX_MODEL` is unset: inherit the machine's Codex model configuration. A bot-specific override uses `CODEX_MODEL`. Do not edit global Codex model settings to configure this bot.
+- The launchd template defaults to `CODEX_MODEL=gpt-6-luna` and `CODEX_REASONING_EFFORT=medium`. If `CODEX_MODEL` is unset in manual runs, inherit the machine configuration. Never change global Codex settings for bot-specific preferences.
 - Headless tasks use `approval_policy=never`; default `CODEX_SANDBOX_MODE=danger-full-access` preserves the existing owner-authorized full access. `workspace-write` and `read-only` are also supported.
+- `/backend codex|claude` explicitly switches per user; `/model luna|terra|sol [medium]` changes Codex model/effort. Preferences persist in SQLite and users cannot change another user's backend. Block changes while a task, pending turn or queue exists. Switching back resumes that provider's own latest conversation; context does not cross providers.
+- Codex quota failures offer `/backend claude`; do not automatically replay tasks on a different backend. A valid Claude login can still have exhausted quota.
 - `/help` and `/status` must identify the active backend. `/stop` must abort the CLI and its command children. Never automatically replay a failed publishing task after tool execution.
 
 ## Live service

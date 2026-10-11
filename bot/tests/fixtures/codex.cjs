@@ -26,6 +26,10 @@ process.stdin.on('end', () => {
     event({type:'turn.failed',error:{message:'Authentication token expired'}});
     return; // even exit 0 must be treated as failure
   }
+  if (request.mode === 'quota') {
+    event({type:'turn.failed',error:{message:'You have hit your usage limit'}});
+    return;
+  }
   if (request.mode === 'incomplete') return;
   event({type:'error',message:'Reconnecting...'});
   event({type:'item.started',item:{id:'tool',type:'command_execution',command:'printf ok'}});

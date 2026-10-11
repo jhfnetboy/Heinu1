@@ -41,6 +41,7 @@ export const CONFIG = {
   CODEX_BIN: process.env.CODEX_BIN || 'codex',
   // Inherit the locally configured model unless explicitly overridden for the bot.
   CODEX_MODEL: process.env.CODEX_MODEL || '',
+  CODEX_REASONING_EFFORT: process.env.CODEX_REASONING_EFFORT || 'medium',
   CODEX_SANDBOX_MODE: process.env.CODEX_SANDBOX_MODE || 'danger-full-access',
   CODEX_APPROVAL_POLICY: 'never', // headless WeChat tasks cannot answer CLI approval prompts
 

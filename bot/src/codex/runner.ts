@@ -14,8 +14,10 @@ export function runCodex(
       'exec', '--json', '--skip-git-repo-check',
       '-c', `approval_policy=${JSON.stringify(CONFIG.CODEX_APPROVAL_POLICY)}`,
       '-c', `sandbox_mode=${JSON.stringify(CONFIG.CODEX_SANDBOX_MODE)}`,
+      '-c', `model_reasoning_effort=${JSON.stringify(opts.codexReasoningEffort ?? CONFIG.CODEX_REASONING_EFFORT)}`,
     ];
-    if (CONFIG.CODEX_MODEL) args.push('--model', CONFIG.CODEX_MODEL);
+    const model = opts.codexModel ?? CONFIG.CODEX_MODEL;
+    if (model) args.push('--model', model);
     for (const dir of opts.extraDirs ?? []) args.push('--add-dir', dir);
     if (opts.sessionId) args.push('resume', opts.sessionId);
     args.push('-');
