@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
-const request = JSON.parse(args[args.indexOf('--print')+1]);
+const request = JSON.parse(args[args.indexOf('--print')+1].split('\n')[0]);
 if (request.log) fs.appendFileSync(request.log,JSON.stringify({args,backend:'claude'})+'\n');
 const resume = args.indexOf('--resume');
 const sid = resume>=0 ? args[resume+1] : 'claude-thread';

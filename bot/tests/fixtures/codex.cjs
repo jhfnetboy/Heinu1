@@ -6,7 +6,7 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
-  const request = JSON.parse(input);
+  const request = JSON.parse(input.split('\n')[0]);
   if (request.log) fs.appendFileSync(request.log, JSON.stringify({args, input}) + '\n');
   const event = ev => process.stdout.write(JSON.stringify(ev) + '\n');
   if (args.includes('missing-thread') || request.mode === 'missing-after-tool') {

@@ -69,14 +69,14 @@ replies at `MAX_MSG_LEN` (1800) and best-effort sends a typing indicator first.
   column on old DBs. `/sessions` and `/resume <n>` index into the per-workspace `last_used` list.
 
 ### Knowledge base ingest
-Turns carrying media (image/file/video) or a URL are auto-ingested into the **global MemPalace**
+All content turns, including plain text and voice, are auto-ingested into the **global MemPalace**
 palace at `~/.mempalace/palace` (wing `heinu1`), shared across every Claude Code session on the
 machine — not a local SQLite KB. `router.ts` appends a KB instruction to the prompt asking Claude
 to emit a fenced ` ```kb-record ` JSON block; `kb/ingest.ts` parses that block after the run,
 archives raw files, and `kb/mempalace-store.ts` writes the record by shelling out to
 `kb/scripts/mp_bridge.py` (a Python bridge into the `mempalace` package). URLs are fetched via the
-`libs/agent-reach` submodule (XiaoHongShu/公众号/web) before ingest. Plain-text-only turns are
-never ingested (prevents chat noise polluting the KB). See `bot/CLAUDE.md` for the module
+`libs/agent-reach` submodule (XiaoHongShu/公众号/web) before ingest. The original input is stored before writing. Publishing follows the owner-authorized default
+three-part workflow, with dedup and verified completion. Durable failed jobs resume after restart. See `bot/CLAUDE.md` for the module
 breakdown and `docs/kb-system-plan.md` / `docs/agent-reach-integration.md` for design detail.
 
 ### Configuration

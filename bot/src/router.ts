@@ -5,6 +5,7 @@ import { SessionStore } from './claude/store';
 import { runAgent, RunEvent, agentLabel } from './agent/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG, AgentProvider } from './config';
+import { planTask, checkDuplicate, publicationInstruction, verifyPublication, stripPublication } from './workflow';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 import { MempalaceStore } from './kb/mempalace-store';
 import {
@@ -23,10 +24,13 @@ const HELP = (provider: AgentProvider) => `🦞 ${agentLabel(provider)} 微信�
 /resume <n>   恢复第 n 个会话
 /status       查看当前状态
 /retry        重试上次失败的任务
+/retry all    重试本用户所有失败任务
+/jobs         查看待补齐的失败任务
 /stop         停止任务或取消待发轮次
 /backend      查看执行后端
 /backend codex | claude  切换后端
 /model luna | terra | sol [medium]  设置 Codex 模型
+/model auto   日常模型 + 复杂研究/三件套自动升档
 
 ─ 工作区命令 ─
 /ws                   列出全部工作区
@@ -39,7 +43,7 @@ const HELP = (provider: AgentProvider) => `🦞 ${agentLabel(provider)} 微信�
 /kb               最近的知识库记录
 /kb search <关键词>  全文搜索
 /kb <编号>        查看某条记录详情
-（发图片/文件 或 小红书/公众号/网页链接 会自动抓取入库）
+（内容消息默认：先入库、写作前查重、匹配 banner、Blog + 公众号草稿）
 
 /help         显示此帮助`;
 
@@ -77,12 +81,30 @@ export class Router {
   private queued        = new Map<string, TurnItem[]>();   // turns waiting while task runs
   private lastFailed    = new Map<string, string>();       // prompt of last failed task, for /retry
   private kb            = new MempalaceStore();              // knowledge-base records (global MemPalace)
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
+  private taskModels = new Map<string,string>();
 
   constructor(
     private sender: Sender,
     private store:  SessionStore,
     private wsm:    WorkspaceManager,
+    private workflow = { checkDuplicate, verifyPublication },
   ) {}
+
+  startRecovery() {
+    this.store.recoverInterruptedJobs();
+    this.retryTimer=setInterval(()=>{ this.retryFailed().catch(err=>console.error('[retry]',err.message)); },60_000);
+    this.retryTimer.unref();
+    this.retryFailed().catch(err=>console.error('[retry]',err.message));
+  }
+  stopRecovery() { if (this.retryTimer) clearInterval(this.retryTimer); }
+  private async retryFailed(user?:string, manual=false) {
+    for (const job of this.store.failedJobs(user,!manual)) {
+      if (this.running.has(job.user_openid) || this.turns.has(job.user_openid) || this.queued.has(job.user_openid)) continue;
+      const err=this.wsm.switch(job.user_openid,job.workspace);if (err) continue;
+      await this.runTask(job.user_openid,job.prompt,JSON.parse(job.context_json),job.id);
+    }
+  }
 
   async handle(msg: WeixinMessage) {
     const userId = msg.from_user_id;
@@ -223,9 +245,6 @@ export class Router {
 
     const urls = extractUrls(rawText);
 
-    // No media and no URL → ordinary chat, not an ingest.
-    if (!rawPaths.length && !urls.length) return null;
-
     return { rawText, rawPaths, urls, hasMedia: rawPaths.length > 0 };
   }
 
@@ -365,10 +384,15 @@ export class Router {
       case '/model': {
         const prefs = this.store.preferences(userId);
         if (!parts[1]) {
-          await this.reply(userId, `Codex 模型: ${prefs.codexModel || '本机默认'}\n推理强度: ${prefs.reasoningEffort}\n/model luna | terra | sol [medium]`); break;
+          await this.reply(userId, `日常模型: ${prefs.codexModel || '本机默认'}\n推理强度: ${prefs.reasoningEffort}\n模式: ${prefs.modelRouting==='auto' ? `自动（研究/三件套 → ${CONFIG.RESEARCH_MODEL} medium）` : '手动固定'}\n/model luna | terra | sol [medium]\n/model auto 恢复自动升档`); break;
         }
         if (this.running.has(userId) || this.turns.has(userId) || this.queued.has(userId)) {
           await this.reply(userId, '⏳ 有任务或消息待处理，请等完成或发 /stop 后再切换模型'); break;
+        }
+        if (parts[1].toLowerCase()==='auto') {
+          const daily=CONFIG.CODEX_MODEL || 'gpt-6-luna';
+          this.store.savePreferences(userId,{...prefs,codexModel:daily,reasoningEffort:'medium',modelRouting:'auto'});
+          await this.reply(userId, `✅ 自动模型路由：日常 ${daily} medium；复杂研究/三件套 ${CONFIG.RESEARCH_MODEL} medium。`);break;
         }
         const aliases: Record<string,string> = {luna:'gpt-6-luna',terra:'gpt-5.6-terra',sol:'gpt-6.1-sol'};
         const model = aliases[parts[1].toLowerCase()] ?? parts[1];
@@ -376,9 +400,9 @@ export class Router {
         if (!/^gpt-[a-z0-9.-]+$/.test(model) || !['low','medium','high','xhigh','max'].includes(effort) || parts.length>3) {
           await this.reply(userId, '用法: /model luna | terra | sol [low|medium|high|xhigh|max]'); break;
         }
-        this.store.savePreferences(userId,{...prefs,codexModel:model,reasoningEffort:effort});
+        this.store.savePreferences(userId,{...prefs,codexModel:model,reasoningEffort:effort,modelRouting:'manual'});
         await this.reply(userId, `✅ Codex 模型: ${model}\n推理强度: ${effort}` +
-          (prefs.provider === 'claude' ? '\n当前使用 Claude Code；发 /backend codex 后生效。' : '\n下个任务生效，继续当前 Codex 会话。'));
+          (prefs.provider === 'claude' ? '\n当前使用 Claude Code；发 /backend codex 后生效。' : '\n手动固定模型；/model auto 恢复自动升档。'));
         break;
       }
 
@@ -447,6 +471,8 @@ export class Router {
           `执行后端: ${agentLabel(prefs.provider)}\n` +
           `模型: ${prefs.provider === 'codex' ? prefs.codexModel || 'Codex 本机默认' : CONFIG.CLAUDE_MODEL}\n` +
           (prefs.provider === 'codex' ? `推理强度: ${prefs.reasoningEffort}\n` : '') +
+          (prefs.provider === 'codex' ? `模型路由: ${prefs.modelRouting==='auto' ? '自动升级研究/发布任务' : '手动固定'}\n` : '') +
+          (this.taskModels.has(userId) ? `当前任务模型: ${this.taskModels.get(userId)}\n` : '') +
           `工作区: ${ws} (${wsDef.path})\n` +
           (turn    ? `收集中: ${this.describeTurnItems(turn.items)}\n` : '') +
           (queue   ? `队列中: ${this.describeTurnItems(queue)}\n` : '') +
@@ -457,6 +483,16 @@ export class Router {
       }
 
       case '/retry': {
+        if (this.store.failedJobs(userId).length) {
+          if (parts[1]==='all') await this.retryFailed(userId,true);
+          else {
+            const job=this.store.failedJobs(userId).slice(-1)[0];
+            if (this.running.has(userId)) { await this.reply(userId,'⏳ 有任务运行中');break; }
+            this.wsm.switch(userId,job.workspace);
+            await this.runTask(userId,job.prompt,JSON.parse(job.context_json),job.id);
+          }
+          break;
+        }
         const failed = this.lastFailed.get(userId);
         if (!failed) {
           await this.reply(userId, '没有可重试的任务'); break;
@@ -467,6 +503,11 @@ export class Router {
         this.lastFailed.delete(userId);
         await this.runTask(userId, failed);
         break;
+      }
+
+      case '/jobs': {
+        const jobs=this.store.failedJobs(userId);
+        await this.reply(userId,jobs.length ? jobs.map(j=>`${j.id.slice(0,8)} · ${j.prompt.slice(0,40)}\n${j.error.slice(0,120)}（已尝试 ${j.attempts} 次）`).join('\n\n')+'\n/retry all 补齐未完成步骤' : '✅ 暂无失败任务');break;
       }
 
       case '/stop': {
@@ -616,12 +657,15 @@ export class Router {
 
   // ── Task runner ───────────────────────────────────────────────────────────
 
-  private async runTask(userId: string, prompt: string, kbCtx: KbContext | null = null) {
+  private async runTask(userId: string, prompt: string, kbCtx: KbContext | null = null, retryId?:string) {
     if (this.running.has(userId)) {
       await this.reply(userId, '⏳ 上一个任务还在运行（/status 查看）');
       return;
     }
     const prefs = this.store.preferences(userId);
+    const plan=planTask(prompt,prefs);
+    const job = retryId ? this.store.job(retryId) : kbCtx ? this.store.createJob(randomUUID(),userId,this.wsm.currentName(userId),prompt,kbCtx) : undefined;
+    if (job && !this.store.claimJob(job.id)) return;
     this.running.add(userId);
     const aborter = new AbortController();
     this.aborts.set(userId, aborter);
@@ -630,6 +674,7 @@ export class Router {
     const toolNames: Set<string> = new Set();
     let resultText   = '';
     let newSessionId: string | null = null;
+    if (prefs.provider==='codex') this.taskModels.set(userId,`${plan.model || '本机默认'} / ${plan.effort}`);
 
     // Everything that can throw lives inside try/finally so a failure during
     // setup (workspace lookup / reply) can never strand `running` and deadlock
@@ -645,16 +690,26 @@ export class Router {
       const ingestNote = kbCtx ? (kbCtx.urls.length ? '（抓取链接并入库）' : '（自动入库）') : '';
       const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
       await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
-        ingestNote + `\n📝 ${preview}`);
+        ingestNote + (prefs.provider==='codex' ? `\n模型: ${plan.model || '本机默认'} / ${plan.effort}（${plan.reason}）` : '') + `\n📝 ${preview}`);
+
+      const duplicate = job && plan.publish ? await this.workflow.checkDuplicate(prompt,job.id,aborter.signal) : undefined;
+      // Dedup first; then persist material before the first writing/tool action.
+      if (job && kbCtx && !job.kb_confirmed) {
+        const rec=fallbackRecord(kbCtx.rawText,kbCtx.hasMedia,kbCtx.urls.length>0);
+        this.kb.insert({user_openid:userId,workspace:wsName,title:rec.title,summary:rec.summary,
+          content_type:rec.content_type,tags:rec.tags,entities:rec.entities,raw_text:kbCtx.rawText || prompt,
+          raw_files:archiveRawFiles(kbCtx.rawPaths),source_session:'',idempotency_key:job.id});
+        this.store.updateJob(job.id,{kb_confirmed:1});
+      }
 
       // Piggyback KB extraction on this single agent run — no extra LLM call.
       // URL turns get the agent-reach fetch instruction; media turns the basic one.
       const kbInstruction = !kbCtx ? ''
         : kbCtx.urls.length ? buildUrlInstruction(kbCtx.urls, kbCtx.rawPaths)
         : KB_INSTRUCTION;
-      const agentPrompt = prompt + kbInstruction;
+      const agentPrompt = prompt + kbInstruction + (job && duplicate ? publicationInstruction(job.id,duplicate) : '');
 
-      const existingUuid = this.activeSession.has(userId)
+      const existingUuid = retryId && job?.session_uuid && job.provider===prefs.provider ? job.session_uuid : this.activeSession.has(userId)
         ? this.activeSession.get(userId) ?? null
         : this.store.getLatest(userId, wsName, prefs.provider)?.session_uuid ?? null;
       newSessionId = existingUuid;
@@ -667,12 +722,15 @@ export class Router {
           extraDirs: [...(wsDef.extra_dirs ?? []), CONFIG.MEDIA_DIR],
           signal:    aborter.signal,
           provider:  prefs.provider,
-          codexModel: prefs.codexModel,
-          codexReasoningEffort: prefs.reasoningEffort,
+          codexModel: plan.model,
+          codexReasoningEffort: plan.effort,
         },
         (ev: RunEvent) => {
           switch (ev.type) {
-            case 'session_id': if (ev.sessionId) newSessionId = ev.sessionId; break;
+            case 'session_id': if (ev.sessionId) {
+              newSessionId = ev.sessionId;
+              if (job) this.store.updateJob(job.id,{session_uuid:ev.sessionId,provider:prefs.provider});
+            } break;
             case 'text':       if (ev.text)      textParts.push(ev.text);     break;
             case 'tool':       if (ev.toolName)  toolNames.add(ev.toolName);  break;
             case 'result':
@@ -695,6 +753,7 @@ export class Router {
       }
 
       if (aborter.signal.aborted) {
+        if (job) this.store.updateJob(job.id,{status:'cancelled'});
         const partial = (resultText || textParts.join('')).trim();
         await this.reply(userId, '🛑 任务已停止' +
           (partial ? `\n\n（已完成部分）\n${partial.slice(0, 300)}` : ''));
@@ -729,6 +788,7 @@ export class Router {
             raw_text:       kbCtx.rawText,
             raw_files:      archived,
             source_session: newSessionId ?? '',
+            idempotency_key: job?.id,
           });
           const tagStr  = rec.tags.length ? '  #' + rec.tags.join(' #') : '';
           const fileStr = archived.length ? `  📎${archived.length}` : '';
@@ -736,8 +796,16 @@ export class Router {
         } catch (err: any) {
           console.error('[kb] 入库失败:', err.message);
           kbLine = '\n\n⚠️ 知识库入库失败（任务本身已完成）';
+          if (job) throw err;
         }
       }
+
+      if (job && plan.publish) {
+        const publication=await this.workflow.verifyPublication(displaySource);
+        this.store.updateJob(job.id,{result_json:JSON.stringify(publication)});
+        displaySource=stripPublication(displaySource);
+      }
+      if (job) this.store.updateJob(job.id,{status:'complete',error:'',next_retry:0});
 
       let body: string;
       if (displaySource.trim()) {
@@ -751,7 +819,14 @@ export class Router {
       await this.reply(userId, toolLine + body + kbLine);
     } catch (err: any) {
       console.error('[router] error:', err.message);
+      if (job && this.store.job(job.id)?.status==='complete') {
+        console.error('[router] 任务已核验完成，但结果回复投递失败；保留完成状态');
+        return;
+      }
       this.lastFailed.set(userId, prompt);
+      if (job) this.store.updateJob(job.id,{status:aborter.signal.aborted ? 'cancelled' : 'failed',error:String(err.message).slice(0,2000),
+        next_retry:Date.now()+(/limit|quota|credit|authenticate|401/i.test(err.message) ? 60*60_000 : 5*60_000)});
+      if (aborter.signal.aborted) { await this.reply(userId,'🛑 任务已停止，原始素材和已完成记录已保留');return; }
 
       if (/usage.?limit|weekly.?limit|rate.?limit|quota|credit|429/i.test(err.message)) {
         const other = prefs.provider === 'codex' ? 'claude' : 'codex';
@@ -775,6 +850,7 @@ export class Router {
     } finally {
       this.running.delete(userId);
       this.aborts.delete(userId);
+      this.taskModels.delete(userId);
       // Fire queued turn if any (setImmediate so finally completes first).
       // Guard the async call so a throw inside runQueued can't become an
       // unhandled rejection that crashes the daemon.

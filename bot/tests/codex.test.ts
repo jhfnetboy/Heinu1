@@ -12,6 +12,7 @@ import { Router } from '../src/router';
 import { WorkspaceManager } from '../src/workspace';
 import { Sender } from '../src/ilink/sender';
 import { WeixinMessage } from '../src/ilink/types';
+import { planTask } from '../src/workflow';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(),'heinu1-codex-test-'));
 const originalBin = CONFIG.CODEX_BIN;
@@ -132,7 +133,7 @@ test('explicit backend/model selection persists and routes isolated histories to
     assert.equal(store.preferences('other').provider,'codex');
     assert.notEqual(store.preferences('other').codexModel,'gpt-5.6-terra');
     const reopened = new SessionStore(file,'codex');
-    try { assert.deepEqual(reopened.preferences('user'),{provider:'codex',codexModel:'gpt-5.6-terra',reasoningEffort:'high'}); }
+    try { assert.deepEqual(reopened.preferences('user'),{provider:'codex',codexModel:'gpt-5.6-terra',reasoningEffort:'high',modelRouting:'manual'}); }
     finally { reopened.close(); }
     await router.handle(message('/backend unknown'));
     assert.equal(store.preferences('user').provider,'codex');
@@ -186,4 +187,60 @@ test('/stop kills a command child as well as the Codex process', async () => {
     await new Promise(r=>setTimeout(r,20));
   }
   assert.equal(alive,false,'tool subprocess terminated');
+});
+
+test('auto routing uses Luna for read-only replies and Sol before research/publishing; manual choice wins', () => {
+  const prefs={provider:'codex' as const,codexModel:'gpt-6-luna',reasoningEffort:'medium',modelRouting:'auto' as const};
+  assert.equal(planTask('只回答当前状态，不要发布',prefs).model,'gpt-6-luna');
+  assert.equal(planTask('https://github.com/example/project',prefs).model,'gpt-6.1-sol');
+  assert.equal(planTask('深入研究模型架构，先不要发布',prefs).model,'gpt-6.1-sol');
+  assert.equal(planTask('直接收到的文字素材',prefs).publish,true);
+  assert.equal(planTask('深入研究',{...prefs,modelRouting:'manual'}).model,'gpt-6-luna');
+});
+
+test('publication jobs dedup and ingest before CLI, persist partial failure, then resume and verify completion', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;
+  CONFIG.WORKSPACES_FILE=path.join(dir,'workflow-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const file=path.join(dir,'workflow.db');const store=new SessionStore(file,'codex');
+  const replies:string[]=[];const steps:string[]=[];let verifyCalls=0;
+  const sender={send:async (_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager(),{
+    checkDuplicate:async()=>{steps.push('dedup');return {file:'/tmp/dedup.json',duplicate:verifyCalls>0};},
+    verifyPublication:async()=>{steps.push('verify');if (++verifyCalls===1) throw new Error('公众号草稿缺失');return {slug:'test',blogUrl:'https://blog.mushroom.cv/blog/test/',mediaId:'draft',banner:'test.jpg'};},
+  });
+  (router as any).kb={insert:(draft:any)=>{steps.push('kb');assert(draft.idempotency_key);return {id:1,tags:[],title:'test'};}};
+  const log=path.join(dir,'workflow.jsonl');const prompt=JSON.stringify({log});
+  const ctx={rawText:prompt,rawPaths:[],urls:[],hasMedia:false};
+  try {
+    (router as any).contextTokens.set('user','test');
+    await (router as any).runTask('user',prompt,ctx);
+    const job=store.failedJobs('user')[0];assert(job);assert.equal(job.kb_confirmed,1);
+    assert.deepEqual(JSON.parse(job.context_json),ctx);assert.equal(job.session_uuid,'codex-thread');
+    assert.deepEqual(steps.slice(0,2),['dedup','kb']);assert(!replies.at(-1)?.includes('✅ Blog'));
+    const reopen=new SessionStore(file,'codex');try {assert.equal(reopen.failedJobs('user')[0].id,job.id);} finally {reopen.close();}
+    await (router as any).runTask('user',prompt,ctx,job.id);
+    assert.equal(store.job(job.id)?.status,'complete');assert.equal(store.job(job.id)?.attempts,2);
+    const calls=fs.readFileSync(log,'utf8').trim().split('\n').map(x=>JSON.parse(x));
+    assert(calls[0].args.includes('gpt-6.1-sol'));assert(calls[1].args.includes('resume'));
+    assert(calls[0].input.includes('写作前查重'));assert(calls[1].input.includes('只补缺失步骤'));
+    assert.equal(store.failedJobs('other').length,0);
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
+});
+
+test('KB failure blocks writing and keeps complete content for retry', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;CONFIG.WORKSPACES_FILE=path.join(dir,'kb-fail-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const store=new SessionStore(path.join(dir,'kb-fail.db'),'codex');
+  const sender={send:async()=>{},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager(),{checkDuplicate:async()=>({file:'/tmp/check',duplicate:false}),verifyPublication:async()=>{throw new Error('unexpected');}});
+  (router as any).kb={insert:()=>{throw new Error('KB unavailable');}};
+  const log=path.join(dir,'blocked-writing.jsonl');const prompt=JSON.stringify({log});
+  try {
+    await (router as any).runTask('user',prompt,{rawText:prompt,rawPaths:[],urls:[],hasMedia:false});
+    assert(!fs.existsSync(log));const job=store.failedJobs('user')[0];assert.equal(job.prompt,prompt);assert.equal(job.kb_confirmed,0);
+    store.updateJob(job.id,{next_retry:0});assert.equal(store.failedJobs('user',true).length,1);
+    for (let i=0;i<2;i++){assert(store.claimJob(job.id));store.updateJob(job.id,{status:'failed'});}
+    assert.equal(store.failedJobs('user',true).length,0); // three attempts, retained for manual retry
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
 });

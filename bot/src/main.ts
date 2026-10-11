@@ -66,9 +66,10 @@ async function main() {
   });
 
   monitor.start();
+  router.startRecovery();
   console.log('✅ 机器人已启动，在微信里找到 ClawBot 联系人直接发消息\n');
 
-  const shutdown = () => { monitor.stop(); process.exit(0); };
+  const shutdown = () => { monitor.stop(); router.stopRecovery(); process.exit(0); };
   process.on('SIGINT',  shutdown);
   process.on('SIGTERM', shutdown);
 }

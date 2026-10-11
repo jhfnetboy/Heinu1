@@ -1,8 +1,10 @@
 import path from 'path';
 import os from 'os';
+import fs from 'fs';
 
 export type AgentProvider = 'codex' | 'claude';
 const provider = process.env.AGENT_PROVIDER || 'codex';
+const palacePython = path.join(os.homedir(), 'Library', 'Application Support', 'pipx', 'venvs', 'mempalace', 'bin', 'python');
 if (provider !== 'codex' && provider !== 'claude') {
   throw new Error(`Unsupported AGENT_PROVIDER: ${provider}`);
 }
@@ -18,10 +20,12 @@ export const CONFIG = {
   // Raw media files are still kept locally under .heinu1-bot/kb/raw/
   KB_DIR:     path.join(os.homedir(), '.heinu1-bot', 'kb'),
   KB_RAW_DIR: path.join(os.homedir(), '.heinu1-bot', 'kb', 'raw'),
+  BLOG_WORKSPACE: process.env.BLOG_WORKSPACE || path.join(os.homedir(), 'Dev', 'mycelium', 'blog'),
+  RESEARCH_MODEL: process.env.RESEARCH_MODEL || 'gpt-6.1-sol',
 
   // Python interpreter inside the MemPalace venv — runs bot/scripts/mp_bridge.py
   MEMPALACE_PYTHON: process.env.MEMPALACE_PYTHON ||
-    path.join(os.homedir(), '.mempalace', 'venv', 'bin', 'python'),
+    (fs.existsSync(palacePython) ? palacePython : path.join(os.homedir(), '.mempalace', 'venv', 'bin', 'python')),
 
   // Domain only — /ilink/bot/* prefix is in each endpoint path
   ILINK_DEFAULT_BASE: 'https://ilinkai.weixin.qq.com',

@@ -85,11 +85,13 @@ export class MempalaceStore {
       'add', draft,
     );
 
-    if (result.error) throw new Error(`MemPalace add failed: ${result.error}`);
+    if (result.error || !result.success || !result.drawer_id) {
+      throw new Error(`MemPalace add failed: ${result.error || result.reason || 'write unconfirmed'}`);
+    }
 
     // Duplicate: MemPalace rejected it — synthesise a minimal record so the
     // caller still gets something back and the reply shows "已入库".
-    const drawerId = result.drawer_id ?? `dup_${Date.now()}`;
+    const drawerId = result.drawer_id;
     const id = this.localId(drawerId);
     const rec: KbRecord = {
       id,

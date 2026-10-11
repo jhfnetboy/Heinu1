@@ -18,6 +18,14 @@ export interface AgentPreferences {
   provider: AgentProvider;
   codexModel: string;
   reasoningEffort: string;
+  modelRouting: 'auto' | 'manual';
+}
+
+export interface WorkflowJob {
+  id: string; user_openid: string; workspace: string; prompt: string;
+  context_json: string; status: string; attempts: number; error: string;
+  next_retry: number; created_at: number; session_uuid: string; provider: AgentProvider;
+  kb_confirmed: number; result_json: string;
 }
 
 export class SessionStore {
@@ -52,6 +60,16 @@ export class SessionStore {
       provider TEXT NOT NULL,
       codex_model TEXT NOT NULL,
       reasoning_effort TEXT NOT NULL
+    )`);
+    const prefCols = (this.db.prepare('PRAGMA table_info(agent_preferences)').all() as {name:string}[]).map(c=>c.name);
+    if (!prefCols.includes('model_routing')) this.db.exec("ALTER TABLE agent_preferences ADD COLUMN model_routing TEXT NOT NULL DEFAULT 'auto'");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS workflow_jobs (
+      id TEXT PRIMARY KEY, user_openid TEXT NOT NULL, workspace TEXT NOT NULL,
+      prompt TEXT NOT NULL, context_json TEXT NOT NULL, status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+      next_retry INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+      session_uuid TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT 'codex',
+      kb_confirmed INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL DEFAULT ''
     )`);
   }
 
@@ -103,16 +121,38 @@ export class SessionStore {
 
   preferences(userOpenid: string): AgentPreferences {
     const row = this.db.prepare('SELECT * FROM agent_preferences WHERE user_openid = ?')
-      .get(userOpenid) as {provider: AgentProvider; codex_model: string; reasoning_effort: string} | undefined;
-    return row ? {provider:row.provider,codexModel:row.codex_model || CONFIG.CODEX_MODEL,reasoningEffort:row.reasoning_effort}
-      : {provider:this.provider,codexModel:CONFIG.CODEX_MODEL,reasoningEffort:CONFIG.CODEX_REASONING_EFFORT};
+      .get(userOpenid) as {provider: AgentProvider; codex_model: string; reasoning_effort: string;model_routing:'auto'|'manual'} | undefined;
+    return row ? {provider:row.provider,codexModel:row.codex_model || CONFIG.CODEX_MODEL,reasoningEffort:row.reasoning_effort,modelRouting:row.model_routing}
+      : {provider:this.provider,codexModel:CONFIG.CODEX_MODEL,reasoningEffort:CONFIG.CODEX_REASONING_EFFORT,modelRouting:'auto'};
   }
 
   savePreferences(userOpenid: string, prefs: AgentPreferences) {
-    this.db.prepare(`INSERT INTO agent_preferences (user_openid, provider, codex_model, reasoning_effort)
-      VALUES (?, ?, ?, ?) ON CONFLICT(user_openid) DO UPDATE SET
-      provider=excluded.provider, codex_model=excluded.codex_model, reasoning_effort=excluded.reasoning_effort`)
-      .run(userOpenid,prefs.provider,prefs.codexModel,prefs.reasoningEffort);
+    this.db.prepare(`INSERT INTO agent_preferences (user_openid, provider, codex_model, reasoning_effort, model_routing)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_openid) DO UPDATE SET
+      provider=excluded.provider, codex_model=excluded.codex_model, reasoning_effort=excluded.reasoning_effort,model_routing=excluded.model_routing`)
+      .run(userOpenid,prefs.provider,prefs.codexModel,prefs.reasoningEffort,prefs.modelRouting);
+  }
+
+  createJob(id:string,user:string,workspace:string,prompt:string,context:unknown) {
+    this.db.prepare(`INSERT OR IGNORE INTO workflow_jobs (id,user_openid,workspace,prompt,context_json,status,created_at)
+      VALUES (?,?,?,?,?,'pending',?)`).run(id,user,workspace,prompt,JSON.stringify(context),Date.now());
+    return this.job(id)!;
+  }
+  job(id:string) { return this.db.prepare('SELECT * FROM workflow_jobs WHERE id=?').get(id) as WorkflowJob|undefined; }
+  failedJobs(user?:string, dueOnly=false): WorkflowJob[] {
+    return this.db.prepare(`SELECT * FROM workflow_jobs WHERE status='failed'
+      ${user ? 'AND user_openid=?' : ''} ${dueOnly ? 'AND attempts<3 AND next_retry<=?' : ''}
+      ORDER BY created_at`).all(...(user?[user]:[]),...(dueOnly?[Date.now()]:[])) as WorkflowJob[];
+  }
+  claimJob(id:string) {
+    return this.db.prepare("UPDATE workflow_jobs SET status='running',attempts=attempts+1 WHERE id=? AND status IN ('failed','pending')").run(id).changes>0;
+  }
+  updateJob(id:string,values:Partial<Pick<WorkflowJob,'status'|'error'|'next_retry'|'session_uuid'|'provider'|'kb_confirmed'|'result_json'>>) {
+    const entries=Object.entries(values);if (!entries.length) return;
+    this.db.prepare(`UPDATE workflow_jobs SET ${entries.map(([k])=>k+'=?').join(',')} WHERE id=?`).run(...entries.map(([,v])=>v),id);
+  }
+  recoverInterruptedJobs() {
+    this.db.prepare("UPDATE workflow_jobs SET status='failed',error='机器人重启，继续核对未完成步骤',next_retry=0 WHERE status IN ('running','pending')").run();
   }
 
   close() { this.db.close(); }

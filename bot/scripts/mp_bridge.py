@@ -22,12 +22,13 @@ import sys
 import json
 import os
 from datetime import datetime
+JSON_OUTPUT = os.fdopen(os.dup(sys.stdout.fileno()), 'w')  # MCP import redirects fd 1 too
 
 # MemPalace lives in its own venv; this bridge is run via MEMPALACE_PYTHON
 # so the package is already on sys.path. If running standalone for testing,
 # insert the source tree explicitly.
-_mp_src = os.path.expanduser("~/Dev/jhfnetboy/mempalace")
-if _mp_src not in sys.path:
+_mp_src = os.environ.get("MEMPALACE_SOURCE_DIR")
+if _mp_src and _mp_src not in sys.path:
     sys.path.insert(0, _mp_src)
 
 from mempalace.config import MempalaceConfig
@@ -43,11 +44,8 @@ WING = "heinu1"
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _get_collection():
-    try:
-        client = chromadb.PersistentClient(path=_config.palace_path)
-        return client.get_or_create_collection(_config.collection_name)
-    except Exception:
-        return None
+    client = chromadb.PersistentClient(path=_config.palace_path)
+    return client.get_collection(_config.collection_name)
 
 
 def _parse_record_content(content: str, drawer_id: str, meta: dict) -> dict:
@@ -128,6 +126,7 @@ def cmd_add(data: dict) -> dict:
     user_openid = data.get("user_openid", "")
     source_session = data.get("source_session", "")
     raw_files = data.get("raw_files", [])
+    job_key = data.get("idempotency_key", "")
 
     # Format as rich markdown so semantic search finds the right things
     lines = [f"# {title}", ""]
@@ -147,15 +146,26 @@ def cmd_add(data: dict) -> dict:
     if raw_files:
         lines.append(f"**Files**: {', '.join(raw_files)}")
     if raw_text:
-        lines += ["", "---", "", raw_text[:2000]]
+        lines += ["", "---", "", raw_text]
 
     content = "\n".join(lines)
-    return tool_add_drawer(
-        wing=WING,
-        room=content_type,
-        content=content,
-        added_by="heinu1",
-    )
+    if job_key:
+        import hashlib
+        drawer_id = "drawer_heinu1_job_" + hashlib.sha256(job_key.encode()).hexdigest()[:24]
+        col = _get_collection()
+        col.upsert(ids=[drawer_id], documents=[content], metadatas=[{
+            "wing": WING, "room": content_type, "added_by": "heinu1",
+            "filed_at": datetime.now().isoformat(), "idempotency_key": job_key,
+        }])
+        result = {"success": True, "drawer_id": drawer_id}
+    else:
+        result = tool_add_drawer(wing=WING, room=content_type, content=content, added_by="heinu1")
+    if not result.get("success") or not result.get("drawer_id"):
+        raise RuntimeError(result.get("error") or result.get("reason") or "MemPalace write unconfirmed")
+    stored = _get_collection().get(ids=[result["drawer_id"]], include=["documents"])
+    if not stored.get("ids") or stored["documents"][0] != content:
+        raise RuntimeError("MemPalace read-back verification failed")
+    return result
 
 
 def cmd_search(data: dict) -> dict:
@@ -231,7 +241,7 @@ def cmd_get(data: dict) -> dict | None:
         doc = res["documents"][0] if res.get("documents") else ""
         return _parse_record_content(doc, drawer_id, meta)
     except Exception:
-        return None
+        raise
 
 
 def cmd_count(data: dict) -> dict:
@@ -241,8 +251,8 @@ def cmd_count(data: dict) -> dict:
     try:
         res = col.get(where={"wing": WING}, include=[])
         return {"count": len(res.get("ids", []))}
-    except Exception:
-        return {"count": 0}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ─── entrypoint ──────────────────────────────────────────────────────────────
@@ -257,7 +267,7 @@ COMMANDS = {
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(json.dumps({"error": f"Usage: mp_bridge.py <{'|'.join(COMMANDS)}>"}))
+        print(json.dumps({"error": f"Usage: mp_bridge.py <{'|'.join(COMMANDS)}>"}), file=JSON_OUTPUT)
         sys.exit(1)
 
     cmd_name = sys.argv[1]
@@ -269,7 +279,9 @@ if __name__ == "__main__":
 
     try:
         result = COMMANDS[cmd_name](payload)
-        print(json.dumps(result))
+        print(json.dumps(result), file=JSON_OUTPUT)
+        if isinstance(result, dict) and result.get("error"):
+            sys.exit(1)
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        print(json.dumps({"error": str(e)}), file=JSON_OUTPUT)
         sys.exit(1)

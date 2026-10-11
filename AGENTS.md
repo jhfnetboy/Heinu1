@@ -12,7 +12,7 @@ Heinu1 receives WeChat messages through Tencent's official iLink API and runs a 
 - Headless tasks use `approval_policy=never`; default `CODEX_SANDBOX_MODE=danger-full-access` preserves the existing owner-authorized full access. `workspace-write` and `read-only` are also supported.
 - `/backend codex|claude` explicitly switches per user; `/model luna|terra|sol [medium]` changes Codex model/effort. Preferences persist in SQLite and users cannot change another user's backend. Block changes while a task, pending turn or queue exists. Switching back resumes that provider's own latest conversation; context does not cross providers.
 - Codex quota failures offer `/backend claude`; do not automatically replay tasks on a different backend. A valid Claude login can still have exhausted quota.
-- `/help` and `/status` must identify the active backend. `/stop` must abort the CLI and its command children. Never automatically replay a failed publishing task after tool execution.
+- `/help` and `/status` must identify the active backend. `/stop` must abort the CLI and its command children. Failed workflow jobs persist their full input/context and retry at most three times with a delay. Always deduplicate and reconcile Blog/WeChat/KB evidence before continuing; never recreate completed drafts or blindly replay a publish operation.
 
 ## Live service
 
@@ -29,3 +29,12 @@ The owner's current default workspace is `/Users/jason/Dev/mycelium/blog`. Codex
 - This owner's established preference is to write and publish requested articles: use `blog-publisher`, including bilingual content, cover/inline imagery, `seo-geo`, M1 Blog, M2 WeChat drafts, live URL/list-order checks and publication records. Follow explicit instructions to draft only when given.
 - Record reusable workflow preferences in the blog's `AGENTS.md`; record each completed batch in the forage feedback/publication ledger. Do not claim a MemPalace write succeeded unless verified.
 - An integration test asking only for status or a short reply does not authorize publishing an article.
+
+## Default content pipeline (owner confirmed 2026-10-11)
+
+- Every non-command content message, including plain text and voice, defaults to: KB → bilingual article with a matching banner → live Blog + WeChat Official Account draft. Slash commands, routine status/chat and explicit read-only/no-publish requests retain their intended meaning; do not turn control commands into public articles.
+- `workflow.ts` selects Luna Medium for routine queries and Sol Medium for research or the complete pipeline, before launching the CLI. Default model routing is automatic within Codex. This is distinct from provider fallback: switching to Claude remains explicit. `/model auto` restores routing; explicit `/model luna|terra|sol ...` pins the model until auto is restored.
+- Run the blog's duplicate checker before writing. Then archive the full original input in KB before any writing. Existing articles/drafts are reconciliation targets; KB-only material is still allowed to become its first article.
+- Use the installed, current MemPalace environment. Do not force-import the old local checkout or write to a modern Chroma DB with the old 0.6 client. Verify writes by reading them back. The MCP package redirects fd 1 during import; keep the bridge JSON output on a preserved descriptor.
+- `workflow_jobs` in SQLite stores source material, workspace, attempts, confirmed KB receipt, session and publication proof. Startup recovers interrupted jobs. `/jobs` lists failures; `/retry all` retries the current user's failed jobs. `/stop` cancels the current job without auto-retrying it.
+- Completion requires verified KB, existing article/banner, matching M2 media ID and HTTP-success Blog URL. A reply delivery failure after successful verification must not turn a completed publication into a retry job.

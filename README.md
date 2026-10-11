@@ -300,7 +300,8 @@ Codex 无人值守任务使用 `approval_policy=never`。Claude 回退仍支持 
 /backend              查看当前后端
 /backend claude       改用 Claude Code
 /backend codex        改回 Codex
-/model luna medium    Codex 改用 GPT-6 Luna，medium
+/model auto           日常 Luna Medium；研究/三件套自动 Sol Medium
+/model luna medium    手动固定 GPT-6 Luna，medium
 /model terra medium   Codex 改用 GPT-5.6 Terra，medium
 /model sol medium     Codex 改用 GPT-6.1 Sol，medium
 /status               查看当前后端、模型、强度与工作区
@@ -465,3 +466,11 @@ Body: {
 
 知识库记录不落在 `~/.heinu1-bot/` 里，而是通过 `bot/scripts/mp_bridge.py` 写进全局 MemPalace，Bot 侧只留原始文件。
 
+
+### 默认三件套与失败恢复
+
+内容消息（包括纯文字、语音和素材链接）默认先查重，再存 KB，接着完成双语文章、匹配主题的 banner、Blog 上线和公众号草稿。控制命令、日常状态查询及明确不发布的请求按原意处理。
+
+默认自动路由：日常 Luna Medium；复杂研究或三件套在开始执行前自动用 Sol Medium。`/model auto` 恢复自动路由，显式指定模型则固定使用该模型。后端仍通过 `/backend` 手动切换。
+
+失败任务的完整素材与执行状态存 SQLite；重启后恢复，自动最多尝试三次，额度/登录失败延后重试。每次恢复先核对旧记录，只补未完成环节。`/jobs` 查看失败，`/retry all` 重试自己的失败任务，`/stop` 取消当前任务。只在 KB、banner、Blog URL 和公众号 media ID 均核验后报告完成。

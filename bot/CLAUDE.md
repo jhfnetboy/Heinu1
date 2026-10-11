@@ -68,7 +68,8 @@ Heinu1 no longer maintains a local SQLite KB. All ingested records go into the g
 ## Provider and model selection
 
 `/backend codex|claude` and `/model luna|terra|sol [medium]` persist per-user selections in the
-`agent_preferences` table. All router session lookups pass the selected provider explicitly;
+`agent_preferences` table. Default model routing is automatic: Luna for routine queries, Sol
+for research and the complete publishing pipeline. Explicit model selection pins it; `/model auto` restores routing. All router session lookups pass the selected provider explicitly;
 never mutate global CONFIG to switch a user. See `../AGENTS.md` for current defaults.
 
 ## Claude JSONL stream format

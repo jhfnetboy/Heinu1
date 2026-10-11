@@ -18,6 +18,7 @@ export interface KbRecord {
 
 /** Shape written by the ingest step (before DB assigns id/timestamps). */
 export interface KbDraft {
+  idempotency_key?: string;
   user_openid:    string;
   workspace:      string;
   title:          string;
