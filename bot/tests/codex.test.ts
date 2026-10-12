@@ -12,7 +12,7 @@ import { Router } from '../src/router';
 import { WorkspaceManager } from '../src/workspace';
 import { Sender } from '../src/ilink/sender';
 import { WeixinMessage } from '../src/ilink/types';
-import { planTask } from '../src/workflow';
+import { planTask, duplicateFailure, checkDuplicate, WorkflowBlockedError } from '../src/workflow';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(),'heinu1-codex-test-'));
 const originalBin = CONFIG.CODEX_BIN;
@@ -194,10 +194,57 @@ test('auto routing uses Luna for read-only replies and Sol before research/publi
   assert.equal(planTask('只回答当前状态，不要发布',prefs).model,'gpt-6-luna');
   assert.equal(planTask('现在用哪个模型？',prefs).model,'gpt-6-luna');
   assert.equal(planTask('帮我修复微信机器人',prefs).publish,false);
+  assert.equal(planTask('检查历史消息,我记得有失败的处理,你看看,补一下',prefs).publish,false);
+  assert.equal(planTask('为啥微信消息总是报错呢？请fix',prefs).publish,false);
+  assert.equal(planTask('检查历史消息,我记得有失败的处理,你看看,补一下',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('https://github.com/example/project',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('深入研究模型架构，先不要发布',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('直接收到的文字素材',prefs).publish,true);
   assert.equal(planTask('深入研究',{...prefs,modelRouting:'manual'}).model,'gpt-6-luna');
+});
+
+test('actual duplicate-check failure preserves the WeChat IP cause and never exposes credentials', async () => {
+  const oldRoot=CONFIG.BLOG_WORKSPACE,oldData=CONFIG.DATA_DIR;
+  const root=path.join(dir,'wechat-dedup-fixture');
+  const script=path.join(root,'.agents/skills/blog-publisher/check-duplicate.cjs');
+  fs.mkdirSync(path.dirname(script),{recursive:true});fs.writeFileSync(path.join(root,'.env'),'');
+  fs.writeFileSync(script,'console.error(JSON.stringify({errcode:40164,errmsg:"invalid ip 203.0.113.8, not in whitelist"}));process.exit(2);');
+  CONFIG.BLOG_WORKSPACE=root;CONFIG.DATA_DIR=path.join(root,'data');
+  try {
+    await assert.rejects(checkDuplicate('source','test-ip'),e=>e instanceof WorkflowBlockedError && /203\.0\.113\.8/.test(e.message));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(CONFIG.DATA_DIR,'jobs/test-ip/duplicate-check.json'),'utf8')).code,2);
+    const message=duplicateFailure(2,'❌ request failed access_token=private-token secret=private-secret').message;
+    assert(!message.includes('private-token'));assert(!message.includes('private-secret'));
+    assert(!(duplicateFailure(2,'❌ request timed out') instanceof WorkflowBlockedError));
+  } finally {CONFIG.BLOG_WORKSPACE=oldRoot;CONFIG.DATA_DIR=oldData;}
+});
+
+test('WeChat whitelist failure saves KB, pauses automatic retries, and resumes manually after repair', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;CONFIG.WORKSPACES_FILE=path.join(dir,'wechat-blocked-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const file=path.join(dir,'wechat-blocked.db');const store=new SessionStore(file,'codex');
+  const replies:string[]=[],steps:string[]=[],kbKeys=new Set<string>();let repaired=false;
+  const sender={send:async(_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager(),{
+    checkDuplicate:async()=>{steps.push('dedup');if(!repaired)throw duplicateFailure(2,'{"errcode":40164,"errmsg":"invalid ip 203.0.113.8, not in whitelist"}');return {file:'/tmp/check',duplicate:false};},
+    verifyPublication:async()=>({slug:'test',blogUrl:'https://blog.mushroom.cv/blog/test/',mediaId:'draft',banner:'test.jpg'}),
+  });
+  (router as any).kb={insert:(draft:any)=>{steps.push('kb');kbKeys.add(draft.idempotency_key);return {id:1,tags:[],title:'source'};}};
+  (router as any).contextTokens.set('user','test');
+  const log=path.join(dir,'wechat-blocked-cli.jsonl'),prompt=JSON.stringify({log});
+  const ctx={rawText:prompt,rawPaths:[],urls:[],hasMedia:false};
+  try {
+    await (router as any).runTask('user',prompt,ctx);
+    const job=store.failedJobs('user')[0];assert(job);assert.equal(job.status,'blocked');assert.equal(job.kb_confirmed,1);
+    assert.deepEqual(steps,['dedup','kb']);assert(!fs.existsSync(log));
+    assert.equal(store.failedJobs('user',true).length,0);assert.equal(store.failedJobs('other').length,0);
+    assert(replies.at(-1)?.includes('203.0.113.8'));assert(replies.at(-1)?.includes('原始素材已入 KB'));
+    assert(!replies.at(-1)?.includes('codex login'));
+    const reopen=new SessionStore(file,'codex');try {reopen.recoverInterruptedJobs();assert.equal(reopen.job(job.id)?.status,'blocked');assert.equal(reopen.failedJobs('user').length,1);} finally {reopen.close();}
+    repaired=true;await (router as any).runTask('user',prompt,ctx,job.id);
+    assert.equal(store.job(job.id)?.status,'complete');assert.equal(store.job(job.id)?.attempts,2);assert(fs.existsSync(log));
+    assert.equal(kbKeys.size,1); // completion enriches the same durable KB record
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
 });
 
 test('publication jobs dedup and ingest before CLI, persist partial failure, then resume and verify completion', async () => {

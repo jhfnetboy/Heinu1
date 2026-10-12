@@ -5,7 +5,7 @@ import { SessionStore } from './claude/store';
 import { runAgent, RunEvent, agentLabel } from './agent/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG, AgentProvider } from './config';
-import { planTask, checkDuplicate, publicationInstruction, verifyPublication, stripPublication } from './workflow';
+import { planTask, checkDuplicate, publicationInstruction, verifyPublication, stripPublication, WorkflowBlockedError } from './workflow';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 import { MempalaceStore } from './kb/mempalace-store';
 import {
@@ -527,7 +527,7 @@ export class Router {
 
       case '/jobs': {
         const jobs=this.store.failedJobs(userId);
-        await this.reply(userId,jobs.length ? jobs.map(j=>`${j.id.slice(0,8)} · ${j.prompt.slice(0,40)}\n${j.error.slice(0,120)}（已尝试 ${j.attempts} 次）`).join('\n\n')+'\n/retry all 补齐未完成步骤' : '✅ 暂无失败任务');break;
+        await this.reply(userId,jobs.length ? jobs.map(j=>`${j.id.slice(0,8)} · ${j.prompt.slice(0,40)}\n${j.status==='blocked' ? '⏸️ 等待配置修复，自动重试已暂停\n' : ''}${j.error.slice(0,220)}（已尝试 ${j.attempts} 次）`).join('\n\n')+'\n修复原因后 /retry all 补齐未完成步骤' : '✅ 暂无失败任务');break;
       }
 
       case '/stop': {
@@ -714,7 +714,13 @@ export class Router {
       await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
         ingestNote + (prefs.provider==='codex' ? `\n模型: ${plan.model || '本机默认'} / ${plan.effort}（${plan.reason}）` : '') + `\n📝 ${preview}`);
 
-      const duplicate = job && plan.publish ? await this.workflow.checkDuplicate(prompt,job.id,aborter.signal) : undefined;
+      let duplicate: Awaited<ReturnType<typeof checkDuplicate>> | undefined;
+      let duplicateError: unknown;
+      if (job && plan.publish) {
+        try { duplicate = await this.workflow.checkDuplicate(prompt,job.id,aborter.signal); }
+        catch (err) { duplicateError=err; }
+      }
+      if (aborter.signal.aborted) throw duplicateError || new Error('任务已停止');
       // Dedup first; then persist material before the first writing/tool action.
       if (job && kbCtx && !job.kb_confirmed) {
         const rec=fallbackRecord(kbCtx.rawText,kbCtx.hasMedia,kbCtx.urls.length>0);
@@ -723,6 +729,8 @@ export class Router {
           raw_files:archiveRawFiles(kbCtx.rawPaths),source_session:'',idempotency_key:job.id});
         this.store.updateJob(job.id,{kb_confirmed:1});
       }
+      // A remote ledger failure must block writing, but must not prevent saving the source.
+      if (duplicateError) throw duplicateError;
 
       // Piggyback KB extraction on this single agent run — no extra LLM call.
       // URL turns get the agent-reach fetch instruction; media turns the basic one.
@@ -847,9 +855,14 @@ export class Router {
         return;
       }
       this.lastFailed.set(userId, prompt);
-      if (job) this.store.updateJob(job.id,{status:aborter.signal.aborted ? 'cancelled' : 'failed',error:String(err.message).slice(0,2000),
+      const blocked = err instanceof WorkflowBlockedError;
+      if (job) this.store.updateJob(job.id,{status:aborter.signal.aborted ? 'cancelled' : blocked ? 'blocked' : 'failed',error:String(err.message).slice(0,2000),
         next_retry:Date.now()+(/limit|quota|credit|authenticate|401/i.test(err.message) ? 60*60_000 : 5*60_000)});
       if (aborter.signal.aborted) { await this.reply(userId,'🛑 任务已停止，原始素材和已完成记录已保留');return; }
+      if (blocked) {
+        await this.reply(userId, `⏸️ ${err.message}\n${job && this.store.job(job.id)?.kb_confirmed ? '✅ 原始素材已入 KB，发布任务已保留。' : '原始素材和发布任务已保留。'}`);
+        return;
+      }
 
       if (/usage.?limit|weekly.?limit|rate.?limit|quota|credit|429/i.test(err.message)) {
         const other = prefs.provider === 'codex' ? 'claude' : 'codex';

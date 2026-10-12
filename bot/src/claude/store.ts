@@ -151,12 +151,12 @@ export class SessionStore {
   }
   job(id:string) { return this.db.prepare('SELECT * FROM workflow_jobs WHERE id=?').get(id) as WorkflowJob|undefined; }
   failedJobs(user?:string, dueOnly=false): WorkflowJob[] {
-    return this.db.prepare(`SELECT * FROM workflow_jobs WHERE status='failed'
+    return this.db.prepare(`SELECT * FROM workflow_jobs WHERE ${dueOnly ? "status='failed'" : "status IN ('failed','blocked')"}
       ${user ? 'AND user_openid=?' : ''} ${dueOnly ? 'AND attempts<3 AND next_retry<=?' : ''}
       ORDER BY created_at`).all(...(user?[user]:[]),...(dueOnly?[Date.now()]:[])) as WorkflowJob[];
   }
   claimJob(id:string) {
-    return this.db.prepare("UPDATE workflow_jobs SET status='running',attempts=attempts+1 WHERE id=? AND status IN ('failed','pending')").run(id).changes>0;
+    return this.db.prepare("UPDATE workflow_jobs SET status='running',attempts=attempts+1 WHERE id=? AND status IN ('failed','blocked','pending')").run(id).changes>0;
   }
   updateJob(id:string,values:Partial<Pick<WorkflowJob,'status'|'error'|'next_retry'|'session_uuid'|'provider'|'kb_confirmed'|'result_json'>>) {
     const entries=Object.entries(values);if (!entries.length) return;

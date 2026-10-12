@@ -4,12 +4,30 @@ import { spawn } from 'child_process';
 import { CONFIG } from './config';
 import { AgentPreferences } from './claude/store';
 
+export class WorkflowBlockedError extends Error {}
+
+export function duplicateFailure(code: number | null, output: string): Error {
+  const errcode = output.match(/"?errcode"?\s*:\s*(\d+)/)?.[1]
+    ?? output.match(/(?:draft|freepublish):\s*(\d+)/)?.[1];
+  if (errcode === '40164' || /invalid ip .*not in whitelist/i.test(output)) {
+    const ip = output.match(/invalid ip\s+([\d.]+)/i)?.[1] || '当前公网 IP';
+    return new WorkflowBlockedError(`公众号 IP 白名单拒绝（40164）：${ip} 不在白名单。请在公众号后台「设置与开发 → 基本配置 → IP 白名单」添加该 IP，保留已有条目，之后发 /retry all。已暂停自动重试。`);
+  }
+  if (['40013', '40125', '48001'].includes(errcode || '') || /缺少 WECHAT_APP_ID|无法加载微信客户端|source:.*No such file/i.test(output)) {
+    return new WorkflowBlockedError(`公众号查重配置或权限未就绪${errcode ? `（${errcode}）` : ''}；需要修复配置后发 /retry all，已暂停自动重试。`);
+  }
+  const detail = (output.split('\n').find(line=>/⚠️|❌|error|failed/i.test(line)) || output.trim().split('\n').pop() || `退出码 ${code}`)
+    .replace(/((?:access_token|appid|secret)["']?\s*[=:]\s*["']?)[^\s&"',}]+/gi, '$1[redacted]').slice(0,500);
+  return new Error(`发布前查重未完成：${detail}；已保留任务，稍后重试`);
+}
+
 export function planTask(prompt: string, prefs: AgentPreferences) {
   // Slash commands bypass this path. Explicit task constraints always win.
   const source = /https?:\/\/|\[(?:图片|文件|视频):/i.test(prompt);
   const routine = !source && /^(?:(?:你|机器人|现在|当前).{0,15}(?:什么|哪个|哪种).{0,6}(?:模型|后端|工作区)|(?:帮我|请)?(?:切换|设置|修改|重启|停止).{0,15}(?:机器人|默认模型|后端|服务|工作区)|(?:帮我|请)?修复.{0,10}(?:机器人|服务))/i.test(prompt.trim());
-  const noPublish = routine || /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢|hi|hello|thanks)[！!。\s]*$/i.test(prompt);
-  const research = /深度|深入|复杂|研究|调研|比较|评测|排查|修复|research|investigate/i.test(prompt);
+  const maintenance = !source && /(?:检查|查看|排查|修复|补一下|补齐|重试|报错|失败|为啥|为什么).{0,25}(?:历史消息|失败任务|失败的处理|微信消息|微信机器人|机器人)|(?:历史消息|失败任务|微信消息|微信机器人|机器人).{0,25}(?:检查|排查|修复|重试|失败|报错)/i.test(prompt);
+  const noPublish = routine || maintenance || /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢|hi|hello|thanks)[！!。\s]*$/i.test(prompt);
+  const research = maintenance || /深度|深入|复杂|研究|调研|比较|评测|排查|修复|research|investigate/i.test(prompt);
   const publish = !noPublish;
   const upgrade = prefs.modelRouting === 'auto' && (publish || research);
   return {publish, model: upgrade ? CONFIG.RESEARCH_MODEL : prefs.codexModel,
@@ -32,7 +50,7 @@ export async function checkDuplicate(prompt: string, jobId: string, signal?: Abo
   const file=path.join(dir,'duplicate-check.json');
   fs.writeFileSync(file,JSON.stringify({...result,checkedAt:new Date().toISOString()},null,2),{mode:0o600});
   if (![0,1].includes(result.code ?? -1) || /⚠️\s*公众号账本没查成|source:.*No such file/i.test(result.output)) {
-    throw new Error('发布前查重未完成；已保留任务，稍后重试');
+    throw duplicateFailure(result.code, result.output);
   }
   return {file, duplicate:result.code===1};
 }
