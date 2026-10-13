@@ -157,7 +157,8 @@ export class SessionStore {
   }
   job(id:string) { return this.db.prepare('SELECT * FROM workflow_jobs WHERE id=?').get(id) as WorkflowJob|undefined; }
   recentJobs(user:string,limit=10):WorkflowJob[] {
-    return this.db.prepare('SELECT * FROM workflow_jobs WHERE user_openid=? ORDER BY created_at DESC LIMIT ?').all(user,limit) as WorkflowJob[];
+    return this.db.prepare(`SELECT j.* FROM workflow_jobs j LEFT JOIN reply_outbox o ON o.job_id=j.id
+      WHERE j.user_openid=? ORDER BY COALESCE(o.created_at,j.created_at) DESC LIMIT ?`).all(user,limit) as WorkflowJob[];
   }
   failedJobs(user?:string, dueOnly=false): WorkflowJob[] {
     return this.db.prepare(`SELECT * FROM workflow_jobs WHERE ${dueOnly ? "status='failed'" : "status IN ('failed','blocked')"}

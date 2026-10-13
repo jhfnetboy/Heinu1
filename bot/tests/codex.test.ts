@@ -220,6 +220,23 @@ test('asking whether Blog published returns saved channel receipts without start
   } finally {store.close();}
 });
 
+test('recent publication queries order recovered results by receipt time rather than original message time', () => {
+  const file=path.join(dir,'receipt-order.db'),store=new SessionStore(file,'codex');
+  try {
+    store.createJob('older-input','user','blog','Older source',{});store.createJob('newer-input','user','blog','Newer source',{});
+    store.queueReply('older-input','user','older completed later');store.queueReply('newer-input','user','newer completed earlier');
+    const db=new Database(file);
+    try {
+      db.prepare('UPDATE workflow_jobs SET created_at=? WHERE id=?').run(1,'older-input');
+      db.prepare('UPDATE workflow_jobs SET created_at=? WHERE id=?').run(2,'newer-input');
+      db.prepare('UPDATE reply_outbox SET created_at=? WHERE job_id=?').run(100,'older-input');
+      db.prepare('UPDATE reply_outbox SET created_at=? WHERE job_id=?').run(50,'newer-input');
+    } finally {db.close();}
+    assert.deepEqual(store.recentJobs('user').map(j=>j.id),['older-input','newer-input']);
+    assert.equal(store.recentJobs('other').length,0);
+  } finally {store.close();}
+});
+
 test('actual duplicate-check failure preserves the WeChat IP cause and never exposes credentials', async () => {
   const oldRoot=CONFIG.BLOG_WORKSPACE,oldData=CONFIG.DATA_DIR;
   const root=path.join(dir,'wechat-dedup-fixture');
