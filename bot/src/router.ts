@@ -119,7 +119,8 @@ export class Router {
   }
   private async retryFailed(user?:string, manual=false) {
     for (const job of this.store.failedJobs(user,!manual)) {
-      if (this.running.has(job.user_openid) || this.turns.has(job.user_openid) || this.queued.has(job.user_openid)) continue;
+      const compensation=manual || job.next_retry===-1;
+      if (this.running.has(job.user_openid) || (!compensation && (this.turns.has(job.user_openid) || this.queued.has(job.user_openid)))) continue;
       const err=this.wsm.switch(job.user_openid,job.workspace);if (err) continue;
       await this.runTask(job.user_openid,job.prompt,JSON.parse(job.context_json),job.id);
     }
@@ -240,11 +241,13 @@ export class Router {
   }
 
   private async runQueued(userId: string) {
+    if (this.running.has(userId)) return;
     const items = this.queued.get(userId);
     if (!items?.length) return;
-    this.queued.delete(userId);
     await this.reply(userId, `🔄 继续处理队列消息 (${this.describeTurnItems(items)})...`);
     await this.downloadTurnMedia(userId, items);
+    if (this.running.has(userId)) return; // keep the durable queued turn if a compensation claimed the slot
+    this.queued.delete(userId);
     const prompt = this.buildTurnPrompt(items);
     await this.runTask(userId, prompt, this.buildKbContext(items),undefined,this.receiptIds(items));
   }
@@ -911,7 +914,7 @@ export class Router {
       // unhandled rejection that crashes the daemon.
       if (this.queued.has(userId)) {
         setImmediate(() => {
-          this.runQueued(userId).catch(err =>
+          this.retryFailed(userId).then(()=>this.runQueued(userId)).catch(err =>
             console.error('[router] runQueued error:', err?.message ?? err));
         });
       }

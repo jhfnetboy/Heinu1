@@ -391,3 +391,18 @@ test('received messages survive a crash during turn buffering, dedup redelivery,
     await restarted.handle({...message,item_list:[{type:1,text_item:{text:'/stop'}}]});
   } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
 });
+
+test('explicit failure compensation takes priority over new queued material and an occupied slot retains its queue', async () => {
+  const file=path.join(dir,'compensation-priority.db'),store=new SessionStore(file,'codex');
+  const job=store.createJob('old-failure','user','blog','Old content',{rawText:'Old content',rawPaths:[],urls:[],hasMedia:false});
+  store.updateJob(job.id,{status:'blocked'});store.requestRetry(job.id);
+  const sender={send:async()=>{},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager()),calls:string[]=[];
+  (router as any).queued.set('user',[{type:1,text:'New material',rawItem:{type:1,text_item:{text:'New material'}}}]);
+  (router as any).runTask=async(_u:string,_p:string,_c:unknown,id:string)=>{calls.push(id);store.updateJob(id,{status:'complete'});};
+  try {
+    await (router as any).retryFailed('user');assert.deepEqual(calls,['old-failure']);
+    (router as any).running.add('user');await (router as any).runQueued('user');
+    assert.equal((router as any).queued.get('user')[0].text,'New material');
+  } finally {store.close();}
+});
