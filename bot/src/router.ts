@@ -5,7 +5,7 @@ import { SessionStore } from './claude/store';
 import { runAgent, RunEvent, agentLabel } from './agent/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG, AgentProvider } from './config';
-import { planTask, checkDuplicate, publicationInstruction, verifyPublication, stripPublication, WorkflowBlockedError, duplicateFailure, publicationReply, PublicationProof } from './workflow';
+import { planTask, isPublicationQuery, checkDuplicate, publicationInstruction, verifyPublication, stripPublication, WorkflowBlockedError, duplicateFailure, publicationReply, PublicationProof } from './workflow';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 import { MempalaceStore } from './kb/mempalace-store';
 import {
@@ -26,6 +26,7 @@ const HELP = (provider: AgentProvider) => `🦞 ${agentLabel(provider)} 微信�
 /retry        重试上次失败的任务
 /retry all    重试本用户所有失败任务
 /jobs         查看待补齐的失败任务
+/publications 查看近期逐项发布结果
 /stop         停止任务或取消待发轮次
 /backend      查看执行后端
 /backend codex | claude  切换后端
@@ -148,6 +149,7 @@ export class Router {
       await this.handleCommand(userId, text);
       return;
     }
+    if (isPublicationQuery(text)) {await this.handleCommand(userId,'/publications');return;}
 
     // All other messages (text, image, voice, file, video) accumulate in the turn
     const receiptId=Number.isFinite(msg.message_id)
@@ -530,6 +532,12 @@ export class Router {
       case '/jobs': {
         const jobs=this.store.failedJobs(userId);
         await this.reply(userId,jobs.length ? jobs.map(j=>`${j.id.slice(0,8)} · ${j.prompt.slice(0,40)}\n${j.status==='blocked' ? '⏸️ 等待配置修复，自动重试已暂停\n' : ''}${j.error.slice(0,220)}（已尝试 ${j.attempts} 次）`).join('\n\n')+'\n修复原因后 /retry all 补齐未完成步骤' : '✅ 暂无失败任务');break;
+      }
+      case '/publications': {
+        const prefs=this.store.preferences(userId);
+        const jobs=this.store.recentJobs(userId,20).filter(j=>planTask(j.prompt,prefs).publish).slice(0,3);
+        const result=jobs.length ? jobs.map(j=>`${j.prompt.split('\n')[0].slice(0,80)}\n${publicationReply(!!j.kb_confirmed,j.result_json ? JSON.parse(j.result_json) : undefined)}`).join('\n\n') : '是不是发布了博客？尚未查询到已核验的发布记录。';
+        await this.reply(userId,'按任务保存的最近发布核验记录：\n'+result);break;
       }
 
       case '/stop': {

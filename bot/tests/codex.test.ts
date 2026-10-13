@@ -12,7 +12,7 @@ import { Router } from '../src/router';
 import { WorkspaceManager } from '../src/workspace';
 import { Sender } from '../src/ilink/sender';
 import { WeixinMessage } from '../src/ilink/types';
-import { planTask, duplicateFailure, checkDuplicate, WorkflowBlockedError, verifyPublication } from '../src/workflow';
+import { planTask, isPublicationQuery, duplicateFailure, checkDuplicate, WorkflowBlockedError, verifyPublication } from '../src/workflow';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(),'heinu1-codex-test-'));
 const originalBin = CONFIG.CODEX_BIN;
@@ -193,6 +193,8 @@ test('auto routing uses Luna for read-only replies and Sol before research/publi
   const prefs={provider:'codex' as const,codexModel:'gpt-6-luna',reasoningEffort:'medium',modelRouting:'auto' as const};
   assert.equal(planTask('只回答当前状态，不要发布',prefs).model,'gpt-6-luna');
   assert.equal(planTask('现在用哪个模型？',prefs).model,'gpt-6-luna');
+  assert.equal(planTask('是不是发布了博客？',prefs).publish,false);
+  assert.equal(isPublicationQuery('OpenHoopVision，上一篇blog发了没？这篇继续三件套'),false);
   assert.equal(planTask('帮我修复微信机器人',prefs).publish,false);
   assert.equal(planTask('检查历史消息,我记得有失败的处理,你看看,补一下',prefs).publish,false);
   assert.equal(planTask('你帮我检查历史失败的消息。你是不是都？再次重试完成这些任务了，检查',prefs).publish,false);
@@ -202,6 +204,20 @@ test('auto routing uses Luna for read-only replies and Sol before research/publi
   assert.equal(planTask('深入研究模型架构，先不要发布',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('直接收到的文字素材',prefs).publish,true);
   assert.equal(planTask('深入研究',{...prefs,modelRouting:'manual'}).model,'gpt-6-luna');
+});
+
+test('asking whether Blog published returns saved channel receipts without starting another article', async () => {
+  const file=path.join(dir,'publication-query.db'),store=new SessionStore(file,'codex');
+  const job=store.createJob('published','user','blog','Known topic',{rawText:'Known topic',rawPaths:[],urls:[],hasMedia:false});
+  store.updateJob(job.id,{status:'complete',kb_confirmed:1,result_json:JSON.stringify({blogUrl:'https://blog.mushroom.cv/blog/known-topic/',mediaId:'known-draft'})});
+  const replies:string[]=[];
+  const sender={send:async(_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager());
+  try {
+    await router.handle({message_id:78,from_user_id:'user',context_token:'context',item_list:[{type:1,text_item:{text:'是不是发布了博客？'}}]} as WeixinMessage);
+    assert(replies.at(-1)?.includes('是不是发布了博客？是'));assert(replies.at(-1)?.includes('https://blog.mushroom.cv/blog/known-topic/'));
+    assert(replies.at(-1)?.includes('known-draft'));assert.equal(store.pendingInbox().length,0);assert.equal((router as any).turns.size,0);
+  } finally {store.close();}
 });
 
 test('actual duplicate-check failure preserves the WeChat IP cause and never exposes credentials', async () => {

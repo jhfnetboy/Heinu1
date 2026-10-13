@@ -6,6 +6,11 @@ import { AgentPreferences } from './claude/store';
 
 export class WorkflowBlockedError extends Error {}
 
+export function isPublicationQuery(text:string) {
+  return !/https?:\/\/|三件套|写(?:一篇|文章)|补发|重新发布/i.test(text)
+    && /(?:是不是|是否|有没有).{0,10}(?:发布|发了|上线).{0,10}(?:博客|blog)|(?:博客|blog).{0,12}(?:发了没|发布了没|发布了吗|上线了吗)|(?:上一篇|上次).{0,15}(?:博客|blog).{0,12}(?:发布|发了|上线)/i.test(text);
+}
+
 export function duplicateFailure(code: number | null, output: string): Error {
   const errcode = output.match(/"?errcode"?\s*:\s*(\d+)/)?.[1]
     ?? output.match(/(?:draft|freepublish):\s*(\d+)/)?.[1];
@@ -26,7 +31,7 @@ export function planTask(prompt: string, prefs: AgentPreferences) {
   const source = /https?:\/\/|\[(?:图片|文件|视频):/i.test(prompt);
   const routine = !source && /^(?:(?:你|机器人|现在|当前).{0,15}(?:什么|哪个|哪种).{0,6}(?:模型|后端|工作区)|(?:帮我|请)?(?:切换|设置|修改|重启|停止).{0,15}(?:机器人|默认模型|后端|服务|工作区)|(?:帮我|请)?修复.{0,10}(?:机器人|服务))/i.test(prompt.trim());
   const maintenance = !source && /(?:检查|查看|排查|修复|补一下|补齐|重试|报错|失败|为啥|为什么).{0,25}(?:历史(?:失败的)?消息|失败任务|失败的处理|微信消息|微信机器人|机器人)|(?:历史(?:失败的)?消息|失败任务|微信消息|微信机器人|机器人).{0,25}(?:检查|排查|修复|重试|失败|报错)/i.test(prompt);
-  const noPublish = routine || maintenance || /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢|hi|hello|thanks)[！!。\s]*$/i.test(prompt);
+  const noPublish = routine || maintenance || isPublicationQuery(prompt) || /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢|hi|hello|thanks)[！!。\s]*$/i.test(prompt);
   const research = maintenance || /深度|深入|复杂|研究|调研|比较|评测|排查|修复|research|investigate/i.test(prompt);
   const publish = !noPublish;
   const upgrade = prefs.modelRouting === 'auto' && (publish || research);
