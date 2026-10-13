@@ -12,7 +12,7 @@ import { Router } from '../src/router';
 import { WorkspaceManager } from '../src/workspace';
 import { Sender } from '../src/ilink/sender';
 import { WeixinMessage } from '../src/ilink/types';
-import { planTask, isPublicationQuery, duplicateFailure, checkDuplicate, WorkflowBlockedError, verifyPublication } from '../src/workflow';
+import { planTask, isPublicationQuery, duplicateFailure, checkDuplicate, WorkflowBlockedError, verifyPublication, publicationReply } from '../src/workflow';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(),'heinu1-codex-test-'));
 const originalBin = CONFIG.CODEX_BIN;
@@ -334,7 +334,16 @@ test('real verifier validates live Blog independently and rejects a forged WeCha
     const proof=await verifyPublication(block(data));assert.equal(proof.mediaId,'');assert.equal(proof.blogUrl,data.blogUrl);
     fs.mkdirSync(path.join(root,'pipeline/m2/output'),{recursive:true});fs.writeFileSync(path.join(root,'pipeline/m2/output',slug+'.json'),JSON.stringify({mediaId:'actual'}));
     await assert.rejects(verifyPublication(block({...data,mediaId:'forged'})),/公众号草稿记录未核验/);
+    const archived=await verifyPublication(block({...data,mediaId:'actual',wechatStatus:'recorded',wechatError:'旧草稿不在当前草稿箱；已发布列表 48001'}));
+    assert.equal(archived.wechatStatus,'recorded');assert.equal(archived.mediaId,'');assert.equal(archived.archivedMediaId,'actual');assert.match(archived.wechatError!,/48001/);
+    await assert.rejects(verifyPublication(block({...data,mediaId:'actual',wechatStatus:'recorded',wechatError:''})),/未核验原因/);
   } finally {CONFIG.BLOG_WORKSPACE=oldRoot;globalThis.fetch=oldFetch;}
+});
+
+test('archived WeChat receipts preserve uncertainty and never claim a current draft exists', () => {
+  const reply=publicationReply(true,{blogUrl:'https://blog.mushroom.cv/blog/anatomy/',mediaId:'old-media',wechatStatus:'recorded',wechatError:'当前草稿未找到，已发布列表 48001'});
+  assert(reply.startsWith('是不是发布了博客？是'));assert.match(reply,/保留旧创建凭证/);assert.match(reply,/未重新创建/);
+  assert(!reply.includes('✅ 公众号草稿：已创建'));assert.match(reply,/48001/);
 });
 
 test('publication jobs dedup and ingest before CLI, persist partial failure, then resume and verify completion', async () => {

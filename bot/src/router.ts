@@ -848,7 +848,7 @@ export class Router {
         publication=await this.workflow.verifyPublication(displaySource);
         this.store.updateJob(job.id,{result_json:JSON.stringify(publication)});
         displaySource=stripPublication(displaySource);
-        if (!publication.mediaId) throw duplicateFailure(2,publication.wechatError || '公众号草稿未创建');
+        if (!publication.mediaId && publication.wechatStatus!=='recorded') throw duplicateFailure(2,publication.wechatError || '公众号草稿未创建');
       }
       if (job) this.store.updateJob(job.id,{status:'complete',error:'',next_retry:0});
       this.lastFailed.delete(userId);
