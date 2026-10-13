@@ -750,7 +750,8 @@ export class Router {
       const kbInstruction = !kbCtx ? ''
         : kbCtx.urls.length ? buildUrlInstruction(kbCtx.urls, kbCtx.rawPaths)
         : KB_INSTRUCTION;
-      const agentPrompt = prompt + kbInstruction + (job && duplicate ? publicationInstruction(job.id,duplicate) : '');
+      const agentPrompt = prompt + kbInstruction + (job && duplicate ? publicationInstruction(job.id,duplicate) : '')
+        + (!plan.publish ? '\n\n[任务边界] 当前任务未授权默认发布流程。只执行本条明确要求；不能把查询、管理、去重或已发布状态确认写成新文章，不部署 Blog、不创建公众号草稿。历史补偿先核对原内容任务的已发布状态，不把管理指令本身变成文章。' : '');
 
       const existingUuid = retryId && job?.session_uuid && job.provider===prefs.provider ? job.session_uuid : this.activeSession.has(userId)
         ? this.activeSession.get(userId) ?? null

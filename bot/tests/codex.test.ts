@@ -194,6 +194,10 @@ test('auto routing uses Luna for read-only replies and Sol before research/publi
   assert.equal(planTask('只回答当前状态，不要发布',prefs).model,'gpt-6-luna');
   assert.equal(planTask('现在用哪个模型？',prefs).model,'gpt-6-luna');
   assert.equal(planTask('是不是发布了博客？',prefs).publish,false);
+  assert.equal(planTask('你要确定，没有重复发送blog或者公众号',prefs).publish,false);
+  assert.equal(planTask('你复用之前，不是应该查下是不是发布过么？',prefs).publish,false);
+  assert.equal(planTask('不要重复发blog',prefs).publish,false);
+  assert.equal(planTask('写一篇关于如何避免公众号重复发布的文章',prefs).publish,true);
   assert.equal(isPublicationQuery('OpenHoopVision，上一篇blog发了没？这篇继续三件套'),false);
   assert.equal(planTask('帮我修复微信机器人',prefs).publish,false);
   assert.equal(planTask('检查历史消息,我记得有失败的处理,你看看,补一下',prefs).publish,false);
@@ -218,6 +222,26 @@ test('asking whether Blog published returns saved channel receipts without start
     assert(replies.at(-1)?.includes('是不是发布了博客？是'));assert(replies.at(-1)?.includes('https://blog.mushroom.cv/blog/known-topic/'));
     assert(replies.at(-1)?.includes('known-draft'));assert.equal(store.pendingInbox().length,0);assert.equal((router as any).turns.size,0);
   } finally {store.close();}
+});
+
+test('duplicate-publication control reaches the agent with a non-publishing boundary and no publisher invocation', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;CONFIG.WORKSPACES_FILE=path.join(dir,'dedup-control-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const store=new SessionStore(path.join(dir,'dedup-control.db'),'codex'),replies:string[]=[];
+  const sender={send:async(_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager(),{
+    checkDuplicate:async()=>{throw new Error('publisher must not run');},
+    verifyPublication:async()=>{throw new Error('publisher must not run');},
+  });
+  (router as any).kb={insert:()=>({id:1,tags:[],title:'control'})};(router as any).contextTokens.set('user','context');
+  const log=path.join(dir,'dedup-control.jsonl'),prompt=JSON.stringify({log})+'\n你要确定，没有重复发送blog或者公众号';
+  try {
+    await (router as any).runTask('user',prompt,{rawText:prompt,rawPaths:[],urls:[],hasMedia:false});
+    const invocation=JSON.parse(fs.readFileSync(log,'utf8').trim());
+    assert.match(invocation.input,/不部署 Blog、不创建公众号草稿/);assert(!invocation.input.includes('[机主已授权的默认内容三件套'));
+    const job=store.recentJobs('user')[0];assert.equal(job.status,'complete');assert.equal(job.result_json,'');
+    assert(!replies.at(-1)?.includes('✅ Blog'));
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
 });
 
 test('recent publication queries order recovered results by receipt time rather than original message time', () => {
