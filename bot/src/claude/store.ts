@@ -79,6 +79,12 @@ export class SessionStore {
       items_json TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'received',
       job_id TEXT NOT NULL DEFAULT '',received_at INTEGER NOT NULL
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS reply_contexts (
+      user_openid TEXT PRIMARY KEY,context_token TEXT NOT NULL,updated_at INTEGER NOT NULL
+    ); CREATE TABLE IF NOT EXISTS reply_outbox (
+      job_id TEXT PRIMARY KEY,user_openid TEXT NOT NULL,text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',created_at INTEGER NOT NULL
+    )`);
   }
 
   create(userOpenid: string, workspace: string, sessionUuid: string, title: string, provider = this.provider): Session {
@@ -152,7 +158,7 @@ export class SessionStore {
   job(id:string) { return this.db.prepare('SELECT * FROM workflow_jobs WHERE id=?').get(id) as WorkflowJob|undefined; }
   failedJobs(user?:string, dueOnly=false): WorkflowJob[] {
     return this.db.prepare(`SELECT * FROM workflow_jobs WHERE ${dueOnly ? "status='failed'" : "status IN ('failed','blocked')"}
-      ${user ? 'AND user_openid=?' : ''} ${dueOnly ? 'AND attempts<3 AND next_retry<=?' : ''}
+      ${user ? 'AND user_openid=?' : ''} ${dueOnly ? 'AND (attempts<3 OR next_retry=-1) AND next_retry<=?' : ''}
       ORDER BY created_at`).all(...(user?[user]:[]),...(dueOnly?[Date.now()]:[])) as WorkflowJob[];
   }
   claimJob(id:string) {
@@ -165,6 +171,25 @@ export class SessionStore {
   recoverInterruptedJobs() {
     this.db.prepare("UPDATE workflow_jobs SET status='failed',error='机器人重启，继续核对未完成步骤',next_retry=0 WHERE status IN ('running','pending')").run();
   }
+  requestRetry(id:string) {
+    this.db.prepare("UPDATE workflow_jobs SET status='failed',next_retry=-1 WHERE id=? AND status IN ('failed','blocked')").run(id);
+  }
+  saveReplyContext(user:string,token:string) {
+    if (!token) return;
+    this.db.prepare(`INSERT INTO reply_contexts VALUES (?,?,?) ON CONFLICT(user_openid) DO UPDATE SET
+      context_token=excluded.context_token,updated_at=excluded.updated_at`).run(user,token,Date.now());
+  }
+  replyContext(user:string):string|undefined {
+    return (this.db.prepare('SELECT context_token FROM reply_contexts WHERE user_openid=?').get(user) as {context_token:string}|undefined)?.context_token;
+  }
+  queueReply(jobId:string,user:string,text:string) {
+    this.db.prepare(`INSERT INTO reply_outbox (job_id,user_openid,text,created_at) VALUES (?,?,?,?)
+      ON CONFLICT(job_id) DO UPDATE SET text=excluded.text,status='pending',created_at=excluded.created_at`).run(jobId,user,text,Date.now());
+  }
+  pendingReplies(user:string):{job_id:string;text:string}[] {
+    return this.db.prepare("SELECT job_id,text FROM reply_outbox WHERE user_openid=? AND status='pending' ORDER BY created_at").all(user) as {job_id:string;text:string}[];
+  }
+  replySent(id:string) {this.db.prepare("UPDATE reply_outbox SET status='sent' WHERE job_id=?").run(id);}
   receive(id:string,user:string,workspace:string,items:unknown) {
     return this.db.prepare('INSERT OR IGNORE INTO message_inbox (id,user_openid,workspace,items_json,received_at) VALUES (?,?,?,?,?)')
       .run(id,user,workspace,JSON.stringify(items),Date.now()).changes>0;

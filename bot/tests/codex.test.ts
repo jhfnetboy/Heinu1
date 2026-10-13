@@ -12,7 +12,7 @@ import { Router } from '../src/router';
 import { WorkspaceManager } from '../src/workspace';
 import { Sender } from '../src/ilink/sender';
 import { WeixinMessage } from '../src/ilink/types';
-import { planTask, duplicateFailure, checkDuplicate, WorkflowBlockedError } from '../src/workflow';
+import { planTask, duplicateFailure, checkDuplicate, WorkflowBlockedError, verifyPublication } from '../src/workflow';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(),'heinu1-codex-test-'));
 const originalBin = CONFIG.CODEX_BIN;
@@ -195,6 +195,7 @@ test('auto routing uses Luna for read-only replies and Sol before research/publi
   assert.equal(planTask('现在用哪个模型？',prefs).model,'gpt-6-luna');
   assert.equal(planTask('帮我修复微信机器人',prefs).publish,false);
   assert.equal(planTask('检查历史消息,我记得有失败的处理,你看看,补一下',prefs).publish,false);
+  assert.equal(planTask('你帮我检查历史失败的消息。你是不是都？再次重试完成这些任务了，检查',prefs).publish,false);
   assert.equal(planTask('为啥微信消息总是报错呢？请fix',prefs).publish,false);
   assert.equal(planTask('检查历史消息,我记得有失败的处理,你看看,补一下',prefs).model,'gpt-6.1-sol');
   assert.equal(planTask('https://github.com/example/project',prefs).model,'gpt-6.1-sol');
@@ -213,6 +214,8 @@ test('actual duplicate-check failure preserves the WeChat IP cause and never exp
   try {
     await assert.rejects(checkDuplicate('source','test-ip'),e=>e instanceof WorkflowBlockedError && /203\.0\.113\.8/.test(e.message));
     assert.equal(JSON.parse(fs.readFileSync(path.join(CONFIG.DATA_DIR,'jobs/test-ip/duplicate-check.json'),'utf8')).code,2);
+    fs.writeFileSync(script,'console.error(JSON.stringify({errcode:40164,errmsg:"invalid ip 203.0.113.8, not in whitelist"}));console.log("```dedup-result\\n"+JSON.stringify({duplicate:true,localLedgersRead:true,wechatError:"{\\\"errcode\\\":40164,\\\"errmsg\\\":\\\"invalid ip 203.0.113.8, not in whitelist\\\"}"})+"\\n```");process.exit(2);');
+    const partial=await checkDuplicate('source','local-ip');assert.equal(partial.duplicate,true);assert(partial.wechatError?.includes('203.0.113.8'));
     const message=duplicateFailure(2,'❌ request failed access_token=private-token secret=private-secret').message;
     assert(!message.includes('private-token'));assert(!message.includes('private-secret'));
     assert(!(duplicateFailure(2,'❌ request timed out') instanceof WorkflowBlockedError));
@@ -238,13 +241,67 @@ test('WeChat whitelist failure saves KB, pauses automatic retries, and resumes m
     const job=store.failedJobs('user')[0];assert(job);assert.equal(job.status,'blocked');assert.equal(job.kb_confirmed,1);
     assert.deepEqual(steps,['dedup','kb']);assert(!fs.existsSync(log));
     assert.equal(store.failedJobs('user',true).length,0);assert.equal(store.failedJobs('other').length,0);
-    assert(replies.at(-1)?.includes('203.0.113.8'));assert(replies.at(-1)?.includes('原始素材已入 KB'));
+    assert(replies.at(-1)?.includes('203.0.113.8'));assert(replies.at(-1)?.includes('✅ KB'));
     assert(!replies.at(-1)?.includes('codex login'));
     const reopen=new SessionStore(file,'codex');try {reopen.recoverInterruptedJobs();assert.equal(reopen.job(job.id)?.status,'blocked');assert.equal(reopen.failedJobs('user').length,1);} finally {reopen.close();}
     repaired=true;await (router as any).runTask('user',prompt,ctx,job.id);
     assert.equal(store.job(job.id)?.status,'complete');assert.equal(store.job(job.id)?.attempts,2);assert(fs.existsSync(log));
     assert.equal(kbKeys.size,1); // completion enriches the same durable KB record
   } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
+});
+
+test('partial publication keeps the verified Blog link, reports every channel, and resumes only the missing draft', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;CONFIG.WORKSPACES_FILE=path.join(dir,'partial-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const file=path.join(dir,'partial-publication.db');const store=new SessionStore(file,'codex');
+  let draftReady=false;const replies:string[]=[];
+  const sender={send:async(_u:string,_c:string,text:string)=>{replies.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager(),{
+    checkDuplicate:async()=>({file:'/tmp/local-ledgers',duplicate:true,wechatError:'40164'}),
+    verifyPublication:async()=>({slug:'test',blogUrl:'https://blog.mushroom.cv/blog/test/',mediaId:draftReady?'draft':'',banner:'test.jpg',wechatError:draftReady?'':'{"errcode":40164,"errmsg":"invalid ip 203.0.113.8, not in whitelist"}'}),
+  });
+  (router as any).kb={insert:()=>({id:1,tags:[],title:'source'})};
+  (router as any).contextTokens.set('user','test');
+  const log=path.join(dir,'partial-cli.jsonl'),prompt=JSON.stringify({log}),ctx={rawText:prompt,rawPaths:[],urls:[],hasMedia:false};
+  try {
+    await (router as any).runTask('user',prompt,ctx);
+    const job=store.failedJobs('user')[0];assert.equal(job.status,'blocked');
+    assert.equal(JSON.parse(job.result_json).blogUrl,'https://blog.mushroom.cv/blog/test/');
+    assert(replies.at(-1)?.startsWith('是不是发布了博客？是'));assert(replies.at(-1)?.includes('✅ KB'));assert(replies.at(-1)?.includes('❌ 公众号草稿'));
+    draftReady=true;await (router as any).runTask('user',prompt,ctx,job.id);
+    assert.equal(store.job(job.id)?.status,'complete');assert(replies.at(-1)?.includes('media_id: draft'));
+    assert(replies.at(-1)?.includes('https://blog.mushroom.cv/blog/test/'));
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
+});
+
+test('publication reports survive a restart and delivery failure without replaying the completed publication', async () => {
+  const file=path.join(dir,'reply-outbox.db');let store=new SessionStore(file,'codex');
+  store.saveReplyContext('user','first-context');store.queueReply('completed-job','user','是不是发布了博客？是\nhttps://blog.mushroom.cv/blog/test/');store.close();
+  store=new SessionStore(file,'codex');let fail=true;const sent:string[]=[];
+  const sender={send:async(_u:string,_c:string,text:string)=>{if(fail)throw new Error('network');sent.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager());
+  try {
+    await (router as any).flushReplies('user');assert.equal(store.pendingReplies('user').length,1);assert.equal(store.replyContext('user'),'first-context');
+    fail=false;await router.handle({message_id:77,from_user_id:'user',context_token:'new-context',item_list:[{type:1,text_item:{text:'/status'}}]} as WeixinMessage);
+    assert.equal(store.pendingReplies('user').length,0);assert.equal(store.replyContext('user'),'new-context');assert(sent[0].startsWith('是不是发布了博客？是'));
+    await (router as any).flushReplies('user');assert.equal(sent.filter(x=>x.startsWith('是不是发布了博客？')).length,1);
+  } finally {store.close();}
+});
+
+test('real verifier validates live Blog independently and rejects a forged WeChat media ID', async () => {
+  const oldRoot=CONFIG.BLOG_WORKSPACE,oldFetch=globalThis.fetch;
+  const root=path.join(dir,'partial-verifier'),slug='example-topic';CONFIG.BLOG_WORKSPACE=root;
+  fs.mkdirSync(path.join(root,'src/content/blog'),{recursive:true});fs.mkdirSync(path.join(root,'src/assets/images'),{recursive:true});
+  fs.writeFileSync(path.join(root,'src/content/blog',slug+'.md'),'---\nheroImage: "../../assets/images/example-banner.jpg"\n---\nbody');
+  fs.writeFileSync(path.join(root,'src/assets/images/example-banner.jpg'),'image');
+  globalThis.fetch=async()=>new Response('<meta property="og:image" content="https://site/example-banner.abc.webp">',{status:200});
+  const data={slug,blogUrl:`https://blog.mushroom.cv/blog/${slug}/`,mediaId:'',wechatError:'40164'};
+  const block=(d:unknown)=>'```publication-result\n'+JSON.stringify(d)+'\n```';
+  try {
+    const proof=await verifyPublication(block(data));assert.equal(proof.mediaId,'');assert.equal(proof.blogUrl,data.blogUrl);
+    fs.mkdirSync(path.join(root,'pipeline/m2/output'),{recursive:true});fs.writeFileSync(path.join(root,'pipeline/m2/output',slug+'.json'),JSON.stringify({mediaId:'actual'}));
+    await assert.rejects(verifyPublication(block({...data,mediaId:'forged'})),/公众号草稿记录未核验/);
+  } finally {CONFIG.BLOG_WORKSPACE=oldRoot;globalThis.fetch=oldFetch;}
 });
 
 test('publication jobs dedup and ingest before CLI, persist partial failure, then resume and verify completion', async () => {

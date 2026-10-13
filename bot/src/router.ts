@@ -5,7 +5,7 @@ import { SessionStore } from './claude/store';
 import { runAgent, RunEvent, agentLabel } from './agent/runner';
 import { WorkspaceManager } from './workspace';
 import { CONFIG, AgentProvider } from './config';
-import { planTask, checkDuplicate, publicationInstruction, verifyPublication, stripPublication, WorkflowBlockedError } from './workflow';
+import { planTask, checkDuplicate, publicationInstruction, verifyPublication, stripPublication, WorkflowBlockedError, duplicateFailure, publicationReply, PublicationProof } from './workflow';
 import { downloadMedia, saveMedia, guessExt } from './ilink/cdn';
 import { MempalaceStore } from './kb/mempalace-store';
 import {
@@ -127,6 +127,8 @@ export class Router {
   async handle(msg: WeixinMessage) {
     const userId = msg.from_user_id;
     this.contextTokens.set(userId, msg.context_token);
+    this.store.saveReplyContext(userId,msg.context_token);
+    await this.flushReplies(userId);
 
     const items = msg.item_list ?? [];
     if (!items.length) {
@@ -830,10 +832,12 @@ export class Router {
         }
       }
 
+      let publication:PublicationProof|undefined;
       if (job && plan.publish) {
-        const publication=await this.workflow.verifyPublication(displaySource);
+        publication=await this.workflow.verifyPublication(displaySource);
         this.store.updateJob(job.id,{result_json:JSON.stringify(publication)});
         displaySource=stripPublication(displaySource);
+        if (!publication.mediaId) throw duplicateFailure(2,publication.wechatError || '公众号草稿未创建');
       }
       if (job) this.store.updateJob(job.id,{status:'complete',error:'',next_retry:0});
       this.lastFailed.delete(userId);
@@ -847,7 +851,8 @@ export class Router {
         body = '（任务完成）';
       }
 
-      await this.reply(userId, toolLine + body + kbLine);
+      if (job && plan.publish) await this.reportPublication(job.id,userId,publicationReply(!!this.store.job(job.id)?.kb_confirmed,publication));
+      else await this.reply(userId, toolLine + body + kbLine);
     } catch (err: any) {
       console.error('[router] error:', err.message);
       if (job && this.store.job(job.id)?.status==='complete') {
@@ -855,10 +860,16 @@ export class Router {
         return;
       }
       this.lastFailed.set(userId, prompt);
-      const blocked = err instanceof WorkflowBlockedError;
+      const blocked = err instanceof WorkflowBlockedError || job?.next_retry===-1;
       if (job) this.store.updateJob(job.id,{status:aborter.signal.aborted ? 'cancelled' : blocked ? 'blocked' : 'failed',error:String(err.message).slice(0,2000),
         next_retry:Date.now()+(/limit|quota|credit|authenticate|401/i.test(err.message) ? 60*60_000 : 5*60_000)});
       if (aborter.signal.aborted) { await this.reply(userId,'🛑 任务已停止，原始素材和已完成记录已保留');return; }
+      if (job && plan.publish) {
+        const saved=this.store.job(job.id)!;
+        const proof=saved.result_json ? JSON.parse(saved.result_json) : undefined;
+        await this.reportPublication(job.id,userId,publicationReply(!!saved.kb_confirmed,proof)+'\n原因：'+err.message);
+        return;
+      }
       if (blocked) {
         await this.reply(userId, `⏸️ ${err.message}\n${job && this.store.job(job.id)?.kb_confirmed ? '✅ 原始素材已入 KB，发布任务已保留。' : '原始素材和发布任务已保留。'}`);
         return;
@@ -900,9 +911,21 @@ export class Router {
   }
 
   private async reply(userId: string, text: string) {
-    const ctxToken = this.contextTokens.get(userId);
-    if (!ctxToken) { console.error('[router] no context_token for', userId); return; }
+    const ctxToken = this.contextTokens.get(userId) || this.store.replyContext(userId);
+    if (!ctxToken) { console.error('[router] reply pending: no message context'); return; }
     await this.sender.send(userId, ctxToken, text);
+  }
+  private async reportPublication(jobId:string,userId:string,text:string) {
+    this.store.queueReply(jobId,userId,text);
+    await this.flushReplies(userId);
+  }
+  private async flushReplies(userId:string) {
+    const token=this.contextTokens.get(userId) || this.store.replyContext(userId);
+    if (!token) return;
+    for (const reply of this.store.pendingReplies(userId)) {
+      try {await this.sender.send(userId,token,reply.text);this.store.replySent(reply.job_id);}
+      catch {console.error('[router] publication reply delivery failed; saved for next message');break;}
+    }
   }
 }
 
