@@ -345,6 +345,28 @@ test('publication reports survive a restart and delivery failure without replayi
   } finally {store.close();}
 });
 
+test('a failed initial acknowledgement cannot block KB or publication and the final result is sent later without replay', async () => {
+  const oldWs=CONFIG.WORKSPACES_FILE;CONFIG.WORKSPACES_FILE=path.join(dir,'ack-failure-workspaces.json');
+  fs.writeFileSync(CONFIG.WORKSPACES_FILE,JSON.stringify({default:'blog',workspaces:{blog:{path:dir,description:'test'}}}));
+  const store=new SessionStore(path.join(dir,'ack-failure.db'),'codex');let deliveryFails=true;const sent:string[]=[],steps:string[]=[];
+  const sender={send:async(_u:string,_c:string,text:string)=>{if(deliveryFails)throw new Error('ret=-2: prepare failed');sent.push(text);},sendTyping:async()=>{}} as unknown as Sender;
+  const router=new Router(sender,store,new WorkspaceManager(),{
+    checkDuplicate:async()=>{steps.push('dedup');return {file:'/tmp/dedup',duplicate:false};},
+    verifyPublication:async()=>({slug:'test',blogUrl:'https://blog.mushroom.cv/blog/test/',mediaId:'actual-draft',banner:'banner.jpg'}),
+  });
+  (router as any).kb={insert:()=>{steps.push('kb');return {id:1,title:'test',tags:[]};}};
+  (router as any).contextTokens.set('user','old-context');store.saveReplyContext('user','old-context');
+  const log=path.join(dir,'ack-failure.jsonl'),prompt=JSON.stringify({log});
+  try {
+    await (router as any).runTask('user',prompt,{rawText:prompt,rawPaths:[],urls:[],hasMedia:false});
+    const job=store.recentJobs('user')[0];assert.equal(job.status,'complete');assert.equal(job.kb_confirmed,1);assert.equal(job.attempts,1);
+    assert.deepEqual(steps.slice(0,2),['dedup','kb']);assert.equal(store.pendingReplies('user').length,1);assert(fs.existsSync(log));
+    deliveryFails=false;(router as any).contextTokens.set('user','fresh-context');await (router as any).flushReplies('user');
+    assert.equal(store.pendingReplies('user').length,0);assert.equal(sent.length,1);assert(sent[0].startsWith('是不是发布了博客？是'));
+    assert.equal(fs.readFileSync(log,'utf8').trim().split('\n').length,1);
+  } finally {CONFIG.WORKSPACES_FILE=oldWs;store.close();}
+});
+
 test('real verifier validates live Blog independently and rejects a forged WeChat media ID', async () => {
   const oldRoot=CONFIG.BLOG_WORKSPACE,oldFetch=globalThis.fetch;
   const root=path.join(dir,'partial-verifier'),slug='example-topic';CONFIG.BLOG_WORKSPACE=root;

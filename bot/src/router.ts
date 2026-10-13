@@ -725,7 +725,8 @@ export class Router {
       const ingestNote = kbCtx ? (kbCtx.urls.length ? '（抓取链接并入库）' : '（自动入库）') : '';
       const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt;
       await this.reply(userId, `⚡ 收到，开始执行\n📁 工作区: ${wsName}` +
-        ingestNote + (prefs.provider==='codex' ? `\n模型: ${plan.model || '本机默认'} / ${plan.effort}（${plan.reason}）` : '') + `\n📝 ${preview}`);
+        ingestNote + (prefs.provider==='codex' ? `\n模型: ${plan.model || '本机默认'} / ${plan.effort}（${plan.reason}）` : '') + `\n📝 ${preview}`)
+        .catch(()=>console.error('[router] execution acknowledgement delivery failed; continuing saved task'));
 
       let duplicate: Awaited<ReturnType<typeof checkDuplicate>> | undefined;
       let duplicateError: unknown;
@@ -863,7 +864,7 @@ export class Router {
         body = '（任务完成）';
       }
 
-      if (job && plan.publish) await this.reportPublication(job.id,userId,publicationReply(!!this.store.job(job.id)?.kb_confirmed,publication));
+      if (job) await this.reportPublication(job.id,userId,plan.publish ? publicationReply(!!this.store.job(job.id)?.kb_confirmed,publication) : toolLine + body + kbLine);
       else await this.reply(userId, toolLine + body + kbLine);
     } catch (err: any) {
       console.error('[router] error:', err.message);
