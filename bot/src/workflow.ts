@@ -32,7 +32,8 @@ export function planTask(prompt: string, prefs: AgentPreferences) {
   const publicationControl = !source && !/写(?:一篇|文章)|三件套|(?:写|生成).{0,10}(?:公众号|博客|blog)/i.test(prompt)
     && /(?:确定|确保|检查|核对|查下|查一下|不要|避免).{0,30}(?:重复|已经发布|发布过).{0,30}(?:blog|博客|公众号)|(?:复用|重试).{0,20}(?:之前|前).{0,30}(?:查|核对).{0,30}(?:发布过|已经发布)/i.test(prompt);
   const routine = !source && /^(?:(?:你|机器人|现在|当前).{0,15}(?:什么|哪个|哪种).{0,6}(?:模型|后端|工作区)|(?:帮我|请)?(?:切换|设置|修改|重启|停止).{0,15}(?:机器人|默认模型|后端|服务|工作区)|(?:帮我|请)?修复.{0,10}(?:机器人|服务))/i.test(prompt.trim());
-  const maintenance = publicationControl || !source && /(?:检查|查看|排查|修复|补一下|补齐|重试|报错|失败|为啥|为什么).{0,25}(?:历史(?:失败的)?消息|失败任务|失败的处理|微信消息|微信机器人|机器人)|(?:历史(?:失败的)?消息|失败任务|微信消息|微信机器人|机器人).{0,25}(?:检查|排查|修复|重试|失败|报错)/i.test(prompt);
+  const asksForArticle = /写(?:一篇|文章)|三件套|(?:写|生成).{0,10}(?:公众号|博客|blog)/i.test(prompt);
+  const maintenance = publicationControl || !source && !asksForArticle && /(?:检查|查看|查一下|排查|修复|补一下|补齐|重试|报错|失败|为啥|为什么).{0,40}(?:历史(?:失败的?)?(?:消息|记录)|失败(?:任务|记录)|失败的处理|微信消息|微信机器人|机器人|(?:blog|博客).{0,12}(?:首页|轮播|banner)|首页.{0,12}(?:轮播|banner))|(?:历史(?:失败的?)?(?:消息|记录)|失败(?:任务|记录)|微信消息|微信机器人|机器人|首页.{0,12}(?:轮播|banner)).{0,30}(?:检查|排查|修复|重试|失败|报错|不显示|没有)/i.test(prompt);
   const noPublish = routine || maintenance || isPublicationQuery(prompt) || /(?:不要|不必|先不|不用|禁止).{0,6}(?:发布|发文|发文章)|只(?:回答|回复|聊天|查询|查看|读|做测试)|只读(?:测试|集成测试)|(?:查询|汇报|查看).{0,10}(?:状态|进度|余额)|^(?:你好|嗨|谢谢|hi|hello|thanks)[！!。\s]*$/i.test(prompt);
   const research = maintenance || /深度|深入|复杂|研究|调研|比较|评测|排查|修复|research|investigate/i.test(prompt);
   const publish = !noPublish;
