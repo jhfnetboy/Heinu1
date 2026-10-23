@@ -210,6 +210,22 @@ test('auto routing uses Luna for read-only replies and Sol before research/publi
   assert.equal(planTask('深入研究',{...prefs,modelRouting:'manual'}).model,'gpt-6-luna');
 });
 
+test('maintenance routing recognizes failure records and homepage carousel troubleshooting without authorizing articles', () => {
+  const prefs={provider:'codex' as const,codexModel:'gpt-6-luna',reasoningEffort:'medium',modelRouting:'auto' as const};
+  for (const prompt of [
+    '检查历史失败记录，重试 ，不要重复发',
+    '你帮我查一下，为什么blog的首页这个banner轮轮换的图形上没有你当前的最新的这个blog',
+    '检查历史失败消息，补齐缺失步骤',
+    '首页轮播不显示最新文章，帮我修复',
+  ]) {
+    const plan=planTask(prompt,prefs);
+    assert.equal(plan.publish,false,prompt);
+    assert.equal(plan.model,'gpt-6.1-sol',prompt);
+  }
+  assert.equal(planTask('写一篇介绍博客首页轮播设计的文章',prefs).publish,true);
+  assert.equal(planTask('检查历史失败记录，然后写一篇文章',prefs).publish,true);
+});
+
 test('asking whether Blog published returns saved channel receipts without starting another article', async () => {
   const file=path.join(dir,'publication-query.db'),store=new SessionStore(file,'codex');
   const job=store.createJob('published','user','blog','Known topic',{rawText:'Known topic',rawPaths:[],urls:[],hasMedia:false});
